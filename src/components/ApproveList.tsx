@@ -65,6 +65,14 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
     setIsEditing(false);
     setShowRejectModal(false);
     setShowScheduleForm(false);
+    
+    // Smooth scroll to details on mobile devices
+    setTimeout(() => {
+      const element = document.getElementById('detalhes-moderar');
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 80);
   };
 
   const handleUpdateCaption = async () => {
@@ -244,7 +252,7 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
         </div>
 
         {/* Right pane: detailed post audit & edit panel */}
-        <div className="lg:col-span-8">
+        <div className="lg:col-span-8" id="detalhes-moderar">
           {selectedPost ? (
             <div className="bg-white border border-slate-200 p-6 rounded-xl shadow-sm space-y-6">
               

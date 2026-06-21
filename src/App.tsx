@@ -356,67 +356,84 @@ export default function App() {
           </div>
         </header>
 
-        {/* MOBILE NAVIGATION */}
-        <div className="md:hidden bg-brand-dark border-b border-brand-darker/60 px-4 py-2 flex items-center justify-around gap-1 overflow-x-auto text-[10px] font-bold text-slate-400">
+        {/* MAIN BODY WORKSPACE */}
+        <main className="flex-1 p-4 sm:p-8 pb-24 md:pb-8 overflow-y-auto">
+          {renderActiveScreen()}
+        </main>
+
+        {/* MOBILE BOTTOM NAVIGATION BAR */}
+        <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-white border-t border-slate-200/80 px-2 flex items-center justify-around z-40 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] pb-safe">
           <button
             onClick={() => setCurrentScreen('dashboard')}
-            className={`px-2.5 py-1 rounded transition-all shrink-0 ${
-              currentScreen === 'dashboard' ? 'bg-brand-secondary text-brand-darker font-extrabold' : ''
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+              currentScreen === 'dashboard' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
+            style={{ minHeight: '48px' }}
           >
-            Painel
+            <LayoutDashboard className="w-5 h-5 mb-0.5" />
+            <span>Painel</span>
           </button>
+          
           <button
             onClick={() => setCurrentScreen('criar')}
-            className={`px-2.5 py-1 rounded transition-all shrink-0 ${
-              currentScreen === 'criar' ? 'bg-brand-secondary text-brand-darker font-extrabold' : ''
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+              currentScreen === 'criar' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
+            style={{ minHeight: '48px' }}
           >
-            Criar
+            <PlusCircle className="w-5 h-5 mb-0.5" />
+            <span>Criar</span>
           </button>
+          
           <button
             onClick={() => setCurrentScreen('aprovacao')}
-            className={`px-2.5 py-1 rounded transition-all shrink-0 relative ${
-              currentScreen === 'aprovacao' ? 'bg-brand-secondary text-brand-darker font-extrabold' : ''
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors relative ${
+              currentScreen === 'aprovacao' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
+            style={{ minHeight: '48px' }}
           >
-            Moderar
+            <ClipboardCheck className="w-5 h-5 mb-0.5" />
+            <span>Moderar</span>
             {pendingBadge > 0 && (
-              <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-amber-500 text-white rounded-full text-[8px] flex items-center justify-center font-bold">
+              <span className="absolute top-2.5 right-3 w-4 h-4 bg-amber-500 text-white rounded-full text-[9px] flex items-center justify-center font-bold border border-white">
                 {pendingBadge}
               </span>
             )}
           </button>
+          
           <button
             onClick={() => setCurrentScreen('historico')}
-            className={`px-2.5 py-1 rounded transition-all shrink-0 ${
-              currentScreen === 'historico' ? 'bg-brand-secondary text-brand-darker font-extrabold' : ''
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+              currentScreen === 'historico' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
+            style={{ minHeight: '48px' }}
           >
-            Histórico
+            <History className="w-5 h-5 mb-0.5" />
+            <span>Histórico</span>
           </button>
+          
           <button
             onClick={() => setCurrentScreen('config')}
-            className={`px-2.5 py-1 rounded transition-all shrink-0 ${
-              currentScreen === 'config' ? 'bg-brand-secondary text-brand-darker font-extrabold' : ''
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+              currentScreen === 'config' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
+            style={{ minHeight: '48px' }}
           >
-            Params
+            <Settings className="w-5 h-5 mb-0.5" />
+            <span>Params</span>
           </button>
+          
           <button
             onClick={() => setCurrentScreen('logs')}
-            className={`px-2.5 py-1 rounded transition-all shrink-0 ${
-              currentScreen === 'logs' ? 'bg-brand-secondary text-brand-darker font-extrabold' : ''
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+              currentScreen === 'logs' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
+            style={{ minHeight: '48px' }}
           >
-            Logs
+            <Terminal className="w-5 h-5 mb-0.5" />
+            <span>Logs</span>
           </button>
         </div>
-
-        {/* MAIN BODY WORKSPACE */}
-        <main className="flex-1 p-4 sm:p-8 overflow-y-auto">
-          {renderActiveScreen()}
-        </main>
 
         {/* App Footer */}
         <footer className="bg-white border-t border-slate-200/80 text-center py-4 text-[10px] text-slate-400 mt-auto shrink-0">
