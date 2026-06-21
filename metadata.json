@@ -1,0 +1,6 @@
+{
+  "name": "Instagram Approval and Publishing Manager",
+  "description": "A full-stack workflow system to design, preview, approve, schedule, and publish posts to Instagram with smart Gemini caption recommendations, Drive-structured storage simulation, and detailed status audit logs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
