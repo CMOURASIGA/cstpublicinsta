@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Dashboard from './components/Dashboard';
 import CreatePost from './components/CreatePost';
 import ApproveList from './components/ApproveList';
@@ -6,6 +6,7 @@ import HistoryList from './components/HistoryList';
 import SettingsSync from './components/SettingsSync';
 import SimulatorLogs from './components/SimulatorLogs';
 import LoginScreen from './components/LoginScreen';
+import UsersManagement from './components/UsersManagement';
 import { PerfilPublicacao, Usuario } from './types';
 import { apiFetch } from './lib/api';
 import { getSupabaseClient } from './lib/supabase';
@@ -18,6 +19,7 @@ import {
   Terminal,
   ChevronDown,
   LogOut,
+  Users,
 } from 'lucide-react';
 
 function getRole(user: Usuario | null): PerfilPublicacao {
@@ -41,6 +43,7 @@ export default function App() {
   const currentRole = getRole(currentUser);
   const canCreate = currentRole === 'CRIADOR' || currentRole === 'ADMIN';
   const canApprove = currentRole === 'APROVADOR' || currentRole === 'ADMIN';
+  const canManageUsers = currentRole === 'ADMIN';
 
   const loadCurrentUser = async () => {
     const res = await apiFetch('/api/auth/me');
@@ -185,7 +188,6 @@ export default function App() {
             currentUser={currentUser}
             onPostCreated={() => {
               fetchBadgeCount();
-              setCurrentScreen('dashboard');
             }}
           />
         );
@@ -213,6 +215,18 @@ export default function App() {
         return <HistoryList />;
       case 'config':
         return <SettingsSync onSettingsSaved={fetchBadgeCount} />;
+      case 'usuarios':
+        if (!canManageUsers) {
+          return (
+            <div className="my-10 mx-auto max-w-xl rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+              <h3 className="text-base font-bold text-slate-800">Acesso restrito</h3>
+              <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                Apenas administradores podem alterar usuários e perfis operacionais.
+              </p>
+            </div>
+          );
+        }
+        return <UsersManagement onUsersChanged={loadCurrentUser} />;
       case 'logs':
         return (
           <div className="space-y-6">
@@ -303,6 +317,18 @@ export default function App() {
             <span>Parâmetros</span>
           </button>
 
+          {canManageUsers && (
+            <button
+              onClick={() => setCurrentScreen('usuarios')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
+                currentScreen === 'usuarios' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Users className="w-4 h-4 shrink-0" />
+              <span>Usuários</span>
+            </button>
+          )}
+
           <button
             onClick={() => setCurrentScreen('logs')}
             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
@@ -368,6 +394,7 @@ export default function App() {
               {currentScreen === 'aprovacao' && 'Moderação e Fluxos'}
               {currentScreen === 'historico' && 'Histórico de Atividade'}
               {currentScreen === 'config' && 'Mapeamento de Integrações'}
+              {currentScreen === 'usuarios' && 'Usuários e Perfis'}
               {currentScreen === 'logs' && 'Logs de Auditoria'}
             </h1>
           </div>
@@ -469,6 +496,19 @@ export default function App() {
             <Settings className="w-5 h-5 mb-0.5" />
             <span>Params</span>
           </button>
+
+          {canManageUsers && (
+            <button
+              onClick={() => setCurrentScreen('usuarios')}
+              className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+                currentScreen === 'usuarios' ? 'text-brand-secondary' : 'text-slate-450'
+              }`}
+              style={{ minHeight: '48px' }}
+            >
+              <Users className="w-5 h-5 mb-0.5" />
+              <span>Usuários</span>
+            </button>
+          )}
 
           <button
             onClick={() => setCurrentScreen('logs')}

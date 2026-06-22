@@ -52,7 +52,7 @@ var HttpError = class extends Error {
 var defaultUsers = [
   {
     id: "user-admin-cmoura",
-    nome: "Carlos Moura",
+    nome: "Christian Moura",
     email: "cmourasiga@gmail.com",
     perfil: "ADMINISTRADOR",
     perfil_publicacao: "ADMIN",
@@ -87,12 +87,8 @@ var memoryStore = {
 var REQUIRED_SUPABASE_TABLES = ["posts", "usuarios", "historico_posts", "logs"];
 var SCHEMA_CACHE_TTL_MS = 6e4;
 var supabaseSchemaCache = null;
+var usuariosRoleColumnAvailableCache = null;
 var usuariosColumnsCache = null;
-var USER_ROLE_BY_EMAIL = {
-  "cmourasiga@gmail.com": "ADMIN",
-  "juliana@agencyflow.com": "CRIADOR",
-  "mariana.aprovacao@agencyflow.com": "APROVADOR"
-};
 var aiClient = null;
 function getGeminiClient() {
   if (!aiClient) {
@@ -255,6 +251,11 @@ async function canUseRealMode() {
   }
   return canUseSupabase();
 }
+async function hasUsuariosRoleColumn() {
+  const columns = await getUsuariosColumns();
+  usuariosRoleColumnAvailableCache = columns.includes("perfil_publicacao");
+  return usuariosRoleColumnAvailableCache;
+}
 async function getUsuariosColumns() {
   if (usuariosColumnsCache) {
     return usuariosColumnsCache;
@@ -280,7 +281,7 @@ async function getUsuariosColumns() {
 function mapSupabaseUserRecord(record) {
   const email = String(record.email || "");
   const perfil = inferPerfilFromRawValue(record.perfil);
-  const perfil_publicacao = USER_ROLE_BY_EMAIL[email.toLowerCase()] || inferPerfilPublicacaoFromRawValue(record.perfil_publicacao, record.perfil) || (perfil === "ADMINISTRADOR" ? "ADMIN" : "CRIADOR");
+  const perfil_publicacao = inferPerfilPublicacaoFromRawValue(record.perfil_publicacao, record.perfil) || (perfil === "ADMINISTRADOR" ? "ADMIN" : "CRIADOR");
   return {
     id: String(record.id || (0, import_crypto.randomUUID)()),
     auth_user_id: record.auth_user_id ? String(record.auth_user_id) : void 0,
@@ -343,10 +344,6 @@ function escapeHtml(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 function normalizePerfilPublicacao(user) {
-  const emailRole = USER_ROLE_BY_EMAIL[String(user.email || "").toLowerCase()];
-  if (emailRole) {
-    return emailRole;
-  }
   if (user.perfil_publicacao === "CRIADOR" || user.perfil_publicacao === "APROVADOR" || user.perfil_publicacao === "ADMIN") {
     return user.perfil_publicacao;
   }
@@ -563,14 +560,12 @@ async function listUsers() {
   const users = usersRaw.map(mapSupabaseUserRecord);
   const existingEmails = new Set(users.map((user) => user.email.toLowerCase()).filter(Boolean));
   const missingDefaults = defaultUsers.filter((user) => !existingEmails.has(user.email.toLowerCase()));
-  const cmoura = users.find((user) => user.email.toLowerCase() === "cmourasiga@gmail.com");
-  const cmouraNeedsAdminUpdate = cmoura && (cmoura.perfil !== "ADMINISTRADOR" || normalizePerfilPublicacao(cmoura) !== "ADMIN");
-  if (missingDefaults.length > 0 || cmouraNeedsAdminUpdate) {
+  if (missingDefaults.length > 0) {
     const payload = defaultUsers.map((user) => {
       const base = {
         nome: user.nome,
         email: user.email,
-        perfil: roleColumnAvailable ? user.perfil : "OPERADOR"
+        perfil: roleColumnAvailable ? user.perfil : normalizePerfilPublicacao(user) === "ADMIN" ? "ADMIN" : "OPERADOR"
       };
       if (roleColumnAvailable) {
         base.perfil_publicacao = normalizePerfilPublicacao(user);
@@ -601,6 +596,50 @@ async function listUsers() {
     `usuarios?select=${selectColumns.join(",")}&order=${orderColumn}`
   );
   return finalUsersRaw.map(mapSupabaseUserRecord);
+}
+async function updateUserRecord(id, patch) {
+  if (!await canUseSupabase()) {
+    const index = memoryStore.usuarios.findIndex((user) => user.id === id);
+    if (index === -1) {
+      throw new Error("Usu\xE1rio n\xE3o encontrado.");
+    }
+    memoryStore.usuarios[index] = {
+      ...memoryStore.usuarios[index],
+      ...patch
+    };
+    return memoryStore.usuarios[index];
+  }
+  const columns = await getUsuariosColumns();
+  const payload = {
+    atualizado_em: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  if (patch.nome !== void 0) payload.nome = patch.nome;
+  if (patch.email !== void 0) payload.email = patch.email;
+  if (patch.perfil !== void 0) payload.perfil = patch.perfil;
+  if (patch.perfil_publicacao !== void 0 && columns.includes("perfil_publicacao")) {
+    payload.perfil_publicacao = patch.perfil_publicacao;
+  }
+  if (patch.ativo !== void 0 && columns.includes("ativo")) {
+    payload.ativo = patch.ativo;
+  }
+  if (patch.ativo !== void 0 && columns.includes("status")) {
+    payload.status = patch.ativo ? "ATIVO" : "INATIVO";
+  }
+  const updated = await supabaseRequest(
+    `usuarios?id=eq.${sanitizeId(id)}&select=*`,
+    {
+      method: "PATCH",
+      headers: {
+        Prefer: "return=representation"
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+  if (!updated[0]) {
+    throw new Error("Usu\xE1rio n\xE3o encontrado.");
+  }
+  usuariosColumnsCache = null;
+  return mapSupabaseUserRecord(updated[0]);
 }
 function getAuthorizationToken(headerValue) {
   const rawValue = Array.isArray(headerValue) ? headerValue[0] : headerValue;
@@ -1203,6 +1242,11 @@ function assertCanCreatePosts(user) {
 function assertCanApprovePosts(user) {
   if (!canApprovePosts(user)) {
     throw new HttpError(403, `Usu\xE1rio '${user.email}' n\xE3o possui permiss\xE3o para aprovar ou publicar.`);
+  }
+}
+function assertIsAdmin(user) {
+  if (user.perfil_publicacao !== "ADMIN") {
+    throw new HttpError(403, `Usu\xE1rio '${user.email}' n\xE3o possui permiss\xE3o administrativa.`);
   }
 }
 function parseBody(value, fallback) {
@@ -1848,10 +1892,48 @@ app.post("/api/settings", (_req, res) => {
 });
 app.get("/api/users", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
     res.json({ users: await listUsers() });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar usu\xE1rios.");
+  }
+});
+app.put("/api/users/:id", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+    const roleColumnAvailable = await hasUsuariosRoleColumn();
+    const perfilPublicacao = req.body.perfil_publicacao ? inferPerfilPublicacaoFromRawValue(req.body.perfil_publicacao) : void 0;
+    if (!roleColumnAvailable && perfilPublicacao === "APROVADOR") {
+      throw new HttpError(
+        400,
+        "A tabela usuarios ainda n\xE3o possui a coluna perfil_publicacao. Neste ambiente s\xF3 \xE9 poss\xEDvel usar Administrador ou Criador."
+      );
+    }
+    const updated = await updateUserRecord(req.params.id, {
+      nome: req.body.nome,
+      email: req.body.email,
+      ativo: req.body.ativo,
+      perfil_publicacao: perfilPublicacao,
+      perfil: perfilPublicacao ? perfilPublicacao === "ADMIN" ? "ADMIN" : "OPERADOR" : req.body.perfil
+    });
+    await createHistoryRecord({
+      post_id: updated.id,
+      post_titulo: "Usu\xE1rio operacional",
+      usuario: actingUser.nome,
+      acao: "Edi\xE7\xE3o de Usu\xE1rio",
+      observacao: `Cadastro operacional de ${updated.nome} atualizado no painel.`,
+      criado_em: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    await addLog("Database", "info", `Usu\xE1rio '${updated.email}' atualizado.`, {
+      userId: updated.id,
+      perfil_publicacao: updated.perfil_publicacao,
+      ativo: updated.ativo
+    });
+    res.json({ success: true, user: updated });
+  } catch (error) {
+    respondWithError(res, error, "Database", "Falha ao atualizar usu\xE1rio.");
   }
 });
 app.post("/api/gemini/generate-caption", async (req, res) => {

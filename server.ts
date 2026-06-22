@@ -98,7 +98,7 @@ interface DriveFolderMap {
 const defaultUsers: Usuario[] = [
   {
     id: "user-admin-cmoura",
-    nome: "Carlos Moura",
+    nome: "Christian Moura",
     email: "cmourasiga@gmail.com",
     perfil: "ADMINISTRADOR",
     perfil_publicacao: "ADMIN",
@@ -137,12 +137,6 @@ const SCHEMA_CACHE_TTL_MS = 60_000;
 let supabaseSchemaCache: SupabaseSchemaState | null = null;
 let usuariosRoleColumnAvailableCache: boolean | null = null;
 let usuariosColumnsCache: string[] | null = null;
-const USER_ROLE_BY_EMAIL: Record<string, PerfilPublicacao> = {
-  "cmourasiga@gmail.com": "ADMIN",
-  "juliana@agencyflow.com": "CRIADOR",
-  "mariana.aprovacao@agencyflow.com": "APROVADOR",
-};
-
 let aiClient: GoogleGenAI | null = null;
 
 function getGeminiClient(): GoogleGenAI {
@@ -374,7 +368,6 @@ function mapSupabaseUserRecord(record: Record<string, unknown>): Usuario {
   const email = String(record.email || "");
   const perfil = inferPerfilFromRawValue(record.perfil);
   const perfil_publicacao =
-    USER_ROLE_BY_EMAIL[email.toLowerCase()] ||
     inferPerfilPublicacaoFromRawValue(record.perfil_publicacao, record.perfil) ||
     (perfil === "ADMINISTRADOR" ? "ADMIN" : "CRIADOR");
 
@@ -454,11 +447,6 @@ function escapeHtml(value: string): string {
 }
 
 function normalizePerfilPublicacao(user: Partial<Usuario>): PerfilPublicacao {
-  const emailRole = USER_ROLE_BY_EMAIL[String(user.email || "").toLowerCase()];
-  if (emailRole) {
-    return emailRole;
-  }
-
   if (user.perfil_publicacao === "CRIADOR" || user.perfil_publicacao === "APROVADOR" || user.perfil_publicacao === "ADMIN") {
     return user.perfil_publicacao;
   }
@@ -718,17 +706,13 @@ async function listUsers(): Promise<Usuario[]> {
   const users = usersRaw.map(mapSupabaseUserRecord);
   const existingEmails = new Set(users.map((user) => user.email.toLowerCase()).filter(Boolean));
   const missingDefaults = defaultUsers.filter((user) => !existingEmails.has(user.email.toLowerCase()));
-  const cmoura = users.find((user) => user.email.toLowerCase() === "cmourasiga@gmail.com");
-  const cmouraNeedsAdminUpdate =
-    cmoura &&
-    (cmoura.perfil !== "ADMINISTRADOR" || normalizePerfilPublicacao(cmoura) !== "ADMIN");
 
-  if (missingDefaults.length > 0 || cmouraNeedsAdminUpdate) {
+  if (missingDefaults.length > 0) {
     const payload = defaultUsers.map((user) => {
       const base = {
         nome: user.nome,
         email: user.email,
-        perfil: roleColumnAvailable ? user.perfil : "OPERADOR",
+        perfil: roleColumnAvailable ? user.perfil : normalizePerfilPublicacao(user) === "ADMIN" ? "ADMIN" : "OPERADOR",
       } as Record<string, unknown>;
 
       if (roleColumnAvailable) {
@@ -767,6 +751,61 @@ async function listUsers(): Promise<Usuario[]> {
     `usuarios?select=${selectColumns.join(",")}&order=${orderColumn}`,
   );
   return finalUsersRaw.map(mapSupabaseUserRecord);
+}
+
+async function updateUserRecord(
+  id: string,
+  patch: Partial<Pick<Usuario, "nome" | "email" | "perfil" | "perfil_publicacao" | "ativo">>,
+): Promise<Usuario> {
+  if (!(await canUseSupabase())) {
+    const index = memoryStore.usuarios.findIndex((user) => user.id === id);
+    if (index === -1) {
+      throw new Error("Usuário não encontrado.");
+    }
+
+    memoryStore.usuarios[index] = {
+      ...memoryStore.usuarios[index],
+      ...patch,
+    };
+
+    return memoryStore.usuarios[index];
+  }
+
+  const columns = await getUsuariosColumns();
+  const payload: Record<string, unknown> = {
+    atualizado_em: new Date().toISOString(),
+  };
+
+  if (patch.nome !== undefined) payload.nome = patch.nome;
+  if (patch.email !== undefined) payload.email = patch.email;
+  if (patch.perfil !== undefined) payload.perfil = patch.perfil;
+  if (patch.perfil_publicacao !== undefined && columns.includes("perfil_publicacao")) {
+    payload.perfil_publicacao = patch.perfil_publicacao;
+  }
+  if (patch.ativo !== undefined && columns.includes("ativo")) {
+    payload.ativo = patch.ativo;
+  }
+  if (patch.ativo !== undefined && columns.includes("status")) {
+    payload.status = patch.ativo ? "ATIVO" : "INATIVO";
+  }
+
+  const updated = await supabaseRequest<Record<string, unknown>[]>(
+    `usuarios?id=eq.${sanitizeId(id)}&select=*`,
+    {
+      method: "PATCH",
+      headers: {
+        Prefer: "return=representation",
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+
+  if (!updated[0]) {
+    throw new Error("Usuário não encontrado.");
+  }
+
+  usuariosColumnsCache = null;
+  return mapSupabaseUserRecord(updated[0]);
 }
 
 function getAuthorizationToken(headerValue: string | string[] | undefined): string {
@@ -1499,6 +1538,12 @@ function assertCanCreatePosts(user: ActingUser) {
 function assertCanApprovePosts(user: ActingUser) {
   if (!canApprovePosts(user)) {
     throw new HttpError(403, `Usuário '${user.email}' não possui permissão para aprovar ou publicar.`);
+  }
+}
+
+function assertIsAdmin(user: ActingUser) {
+  if (user.perfil_publicacao !== "ADMIN") {
+    throw new HttpError(403, `Usuário '${user.email}' não possui permissão administrativa.`);
   }
 }
 
@@ -2265,10 +2310,56 @@ app.post("/api/settings", (_req, res) => {
 
 app.get("/api/users", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
     res.json({ users: await listUsers() });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar usuários.");
+  }
+});
+
+app.put("/api/users/:id", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+
+    const roleColumnAvailable = await hasUsuariosRoleColumn();
+    const perfilPublicacao = req.body.perfil_publicacao
+      ? inferPerfilPublicacaoFromRawValue(req.body.perfil_publicacao)
+      : undefined;
+    if (!roleColumnAvailable && perfilPublicacao === "APROVADOR") {
+      throw new HttpError(
+        400,
+        "A tabela usuarios ainda não possui a coluna perfil_publicacao. Neste ambiente só é possível usar Administrador ou Criador.",
+      );
+    }
+
+    const updated = await updateUserRecord(req.params.id, {
+      nome: req.body.nome,
+      email: req.body.email,
+      ativo: req.body.ativo,
+      perfil_publicacao: perfilPublicacao,
+      perfil: perfilPublicacao ? (perfilPublicacao === "ADMIN" ? "ADMIN" : "OPERADOR") : req.body.perfil,
+    });
+
+    await createHistoryRecord({
+      post_id: updated.id,
+      post_titulo: "Usuário operacional",
+      usuario: actingUser.nome,
+      acao: "Edição de Usuário",
+      observacao: `Cadastro operacional de ${updated.nome} atualizado no painel.`,
+      criado_em: new Date().toISOString(),
+    });
+
+    await addLog("Database", "info", `Usuário '${updated.email}' atualizado.`, {
+      userId: updated.id,
+      perfil_publicacao: updated.perfil_publicacao,
+      ativo: updated.ativo,
+    });
+
+    res.json({ success: true, user: updated });
+  } catch (error) {
+    respondWithError(res, error, "Database", "Falha ao atualizar usuário.");
   }
 });
 

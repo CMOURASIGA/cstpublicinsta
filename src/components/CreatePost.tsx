@@ -1,9 +1,20 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Post, PostStatus, Usuario } from '../types';
 import { apiFetch } from '../lib/api';
-import { 
-  FileText, Sparkles, UploadCloud, Film, Image as ImageIcon, PlusCircle, CheckCircle, 
-  HelpCircle, Trash, Loader2, RefreshCw 
+import {
+  CheckCircle,
+  FileText,
+  Film,
+  Image as ImageIcon,
+  Loader2,
+  Pencil,
+  PlusCircle,
+  Save,
+  Send,
+  Sparkles,
+  Trash,
+  UploadCloud,
+  XCircle,
 } from 'lucide-react';
 
 interface CreatePostProps {
@@ -11,37 +22,101 @@ interface CreatePostProps {
   currentUser: Usuario;
 }
 
+function getCurrentRole(user: Usuario): 'CRIADOR' | 'APROVADOR' | 'ADMIN' {
+  return user.perfil_publicacao || (user.perfil === 'ADMINISTRADOR' ? 'ADMIN' : 'CRIADOR');
+}
+
 export default function CreatePost({ onPostCreated, currentUser }: CreatePostProps) {
-  // Post states
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [editingPostId, setEditingPostId] = useState<string | null>(null);
   const [titulo, setTitulo] = useState('');
   const [legenda, setLegenda] = useState('');
   const [hashtags, setHashtags] = useState('');
   const [tipo, setTipo] = useState<'IMAGEM' | 'VIDEO'>('IMAGEM');
-  
-  // File upload states
   const [dragActive, setDragActive] = useState(false);
   const [fileName, setFileName] = useState('');
   const [fileUrl, setFileUrl] = useState('');
   const [fileId, setFileId] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
-
-  // Gemini states
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiTagsCount, setAiTagsCount] = useState(5);
   const [aiGenerating, setAiGenerating] = useState(false);
-
-  // General submission
   const [saving, setSaving] = useState(false);
+  const [loadingDrafts, setLoadingDrafts] = useState(true);
   const [successMsg, setSuccessMsg] = useState('');
 
-  // Drag and drop handlers
+  const currentRole = getCurrentRole(currentUser);
+  const canSeeAllDrafts = currentRole === 'ADMIN';
+
+  const editablePosts = useMemo(
+    () =>
+      posts.filter((post) => {
+        const isEditableStatus = post.status === 'RASCUNHO' || post.status === 'REJEITADA';
+        if (!isEditableStatus) return false;
+        if (canSeeAllDrafts) return true;
+        return (post.criado_por_nome || '').trim().toLowerCase() === currentUser.nome.trim().toLowerCase();
+      }),
+    [posts, canSeeAllDrafts, currentUser.nome],
+  );
+
+  const editingPost = useMemo(
+    () => editablePosts.find((post) => post.id === editingPostId) || null,
+    [editablePosts, editingPostId],
+  );
+
+  const resetForm = () => {
+    setEditingPostId(null);
+    setTitulo('');
+    setLegenda('');
+    setHashtags('');
+    setTipo('IMAGEM');
+    setFileName('');
+    setFileUrl('');
+    setFileId('');
+    setUploaded(false);
+    setAiPrompt('');
+  };
+
+  const loadPostIntoForm = (post: Post) => {
+    setEditingPostId(post.id);
+    setTitulo(post.titulo || '');
+    setLegenda(post.legenda || '');
+    setHashtags(post.hashtags || '');
+    setTipo(post.tipo === 'VIDEO' ? 'VIDEO' : 'IMAGEM');
+    setFileUrl(post.drive_url || '');
+    setFileId(post.drive_file_id || '');
+    setFileName(post.drive_file_id || post.titulo || '');
+    setUploaded(Boolean(post.drive_url || post.drive_file_id));
+    setSuccessMsg('');
+  };
+
+  const fetchDrafts = async () => {
+    setLoadingDrafts(true);
+
+    try {
+      const res = await apiFetch('/api/posts');
+      const data = await res.json();
+      if (data.posts) {
+        setPosts(data.posts);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingDrafts(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchDrafts();
+  }, []);
+
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
+    if (e.type === 'dragenter' || e.type === 'dragover') {
       setDragActive(true);
-    } else if (e.type === "dragleave") {
+    } else if (e.type === 'dragleave') {
       setDragActive(false);
     }
   };
@@ -51,15 +126,13 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
     e.stopPropagation();
     setDragActive(false);
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      await handleFileUpload(file);
+      await handleFileUpload(e.dataTransfer.files[0]);
     }
   };
 
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      await handleFileUpload(file);
+      await handleFileUpload(e.target.files[0]);
     }
   };
 
@@ -72,12 +145,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
     });
 
   const handleFileUpload = async (file: File) => {
-    if (file.type.startsWith('video/')) {
-      setTipo('VIDEO');
-    } else {
-      setTipo('IMAGEM');
-    }
-
+    setTipo(file.type.startsWith('video/') ? 'VIDEO' : 'IMAGEM');
     setUploading(true);
     setFileName(file.name);
 
@@ -114,13 +182,14 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
     }
   };
 
-  // Generate captions using Gemini LLM
   const handleAiGeneration = async () => {
-    if (!titulo) {
-      alert('Por favor, informe ao menos o Título antes de acionar o auxílio de IA do Gemini.');
+    if (!titulo.trim()) {
+      alert('Informe ao menos o título antes de acionar a IA.');
       return;
     }
+
     setAiGenerating(true);
+
     try {
       const res = await apiFetch('/api/gemini/generate-caption', {
         method: 'POST',
@@ -129,9 +198,10 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
           title: titulo,
           prompt: aiPrompt,
           type: tipo,
-          hashtagsCount: aiTagsCount
-        })
+          hashtagsCount: aiTagsCount,
+        }),
       });
+
       const data = await res.json();
       if (data.success) {
         setLegenda(data.legenda);
@@ -144,56 +214,84 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
     }
   };
 
-  // Save/Submit Post to Database
-  const savePost = async (targetStatus: PostStatus) => {
+  const persistPost = async (targetStatus: PostStatus) => {
     if (!titulo.trim()) {
       alert('O título da publicação é obrigatório.');
       return;
     }
+
     if (targetStatus === 'PENDENTE' && !fileUrl) {
-      alert('Para enviar a postagem para homologação de Carlos Moura, anexe uma imagem ou um vídeo de mídia.');
+      alert('Para enviar para aprovação, anexe uma imagem ou vídeo.');
       return;
     }
 
     setSaving(true);
+
     try {
-      const res = await apiFetch('/api/posts', {
-        method: 'POST',
+      const payload = {
+        titulo,
+        legenda,
+        tipo,
+        drive_url: fileUrl,
+        drive_file_id: fileId,
+        hashtags,
+        status: targetStatus,
+      };
+
+      const endpoint = editingPostId ? `/api/posts/${editingPostId}` : '/api/posts';
+      const method = editingPostId ? 'PUT' : 'POST';
+      const res = await apiFetch(endpoint, {
+        method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          titulo,
-          legenda,
-          tipo,
-          drive_url: fileUrl,
-          drive_file_id: fileId,
-          hashtags,
-          status: targetStatus
-        })
+        body: JSON.stringify(payload),
       });
 
-      if (res.ok) {
-        setSuccessMsg(targetStatus === 'PENDENTE' 
-          ? 'Enviado! Sua publicação foi salva com sucesso e enviada ao Admin Carlos Moura.'
-          : 'Sucesso! Rascunho salvo com sucesso.'
-        );
-        
-        // Reset states
-        setTitulo('');
-        setLegenda('');
-        setHashtags('');
-        setFileName('');
-        setFileUrl('');
-        setFileId('');
-        setUploaded(false);
-        setAiPrompt('');
-
-        setTimeout(() => {
-          setSuccessMsg('');
-          if (onPostCreated) onPostCreated();
-        }, 3000);
+      const data = await res.json();
+      if (!res.ok || !data.post) {
+        throw new Error(data.error || 'Falha ao salvar a publicação.');
       }
+
+      setSuccessMsg(
+        targetStatus === 'PENDENTE'
+          ? editingPostId
+            ? 'Rascunho atualizado e enviado para aprovação.'
+            : 'Publicação criada e enviada para aprovação.'
+          : editingPostId
+            ? 'Rascunho atualizado com sucesso.'
+            : 'Rascunho salvo com sucesso.',
+      );
+
+      resetForm();
+      await fetchDrafts();
+      onPostCreated?.();
     } catch (err) {
       console.error(err);
+      alert(err instanceof Error ? err.message : 'Falha ao salvar a publicação.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteDraft = async () => {
+    if (!editingPostId) return;
+    if (!window.confirm('Confirma a exclusão deste rascunho?')) return;
+
+    setSaving(true);
+
+    try {
+      const res = await apiFetch(`/api/posts/${editingPostId}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Falha ao excluir o rascunho.');
+      }
+
+      setSuccessMsg('Rascunho excluído com sucesso.');
+      resetForm();
+      await fetchDrafts();
+      onPostCreated?.();
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : 'Falha ao excluir o rascunho.');
     } finally {
       setSaving(false);
     }
@@ -203,94 +301,159 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
     <div className="space-y-6">
       <div className="flex items-center justify-between border-b border-slate-200 pb-3">
         <div>
-          <h2 className="text-xl font-bold font-sans text-slate-800">Criar Nova Publicação</h2>
+          <h2 className="text-xl font-bold font-sans text-slate-800">
+            {editingPost ? 'Editar Rascunho' : 'Criar Nova Publicação'}
+          </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Preencha os dados abaixo do post, anexe a mídia e conte com auxílio do Gemini AI para suas legendas.
+            Salve rascunhos, recupere publicações devolvidas, edite conteúdo e envie para aprovação quando estiver pronto.
           </p>
         </div>
         <PlusCircle className="w-5 h-5 text-brand-secondary" />
       </div>
 
       {successMsg && (
-        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg p-4 text-xs font-semibold flex items-center gap-2 animate-bounce">
-          <CheckCircle className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-xs font-semibold text-emerald-800 flex items-center gap-2">
+          <CheckCircle className="w-4 h-4 text-emerald-600" />
           <span>{successMsg}</span>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
-        {/* Creation Fields Pane */}
-        <div className="lg:col-span-7 bg-white border border-slate-200 p-6 rounded-xl shadow-sm space-y-4">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex items-center justify-between">
           <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">
-              Título do Post
-            </label>
-            <input
-              type="text"
-              required
-              placeholder="e.g. Infográfico Tendências UI/UX 2027"
-              value={titulo}
-              onChange={(e) => setTitulo(e.target.value)}
-              className="w-full text-xs border border-slate-200 rounded-lg p-2.5 outline-none focus:border-brand-primary"
-            />
+            <h3 className="text-sm font-bold text-slate-800">Rascunhos e Devolvidos</h3>
+            <p className="mt-1 text-xs text-slate-500">
+              Clique em um item para editar ou excluir. Posts rejeitados também voltam para cá.
+            </p>
           </div>
+          {editingPost && (
+            <button
+              type="button"
+              onClick={resetForm}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              <FileText className="h-4 w-4" />
+              Novo rascunho
+            </button>
+          )}
+        </div>
 
-          <div className="grid grid-cols-2 gap-4">
+        {loadingDrafts ? (
+          <div className="py-6 text-center text-xs text-slate-500">Carregando rascunhos...</div>
+        ) : editablePosts.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-xs text-slate-500">
+            Nenhum rascunho disponível para este usuário no momento.
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {editablePosts.map((post) => (
+              <button
+                key={post.id}
+                type="button"
+                onClick={() => loadPostIntoForm(post)}
+                className={`rounded-xl border p-4 text-left transition-all ${
+                  editingPostId === post.id
+                    ? 'border-brand-secondary bg-brand-light shadow-sm'
+                    : post.status === 'REJEITADA'
+                      ? 'border-rose-200 bg-rose-50/40 hover:bg-rose-50'
+                      : 'border-slate-200 bg-white hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                      post.status === 'REJEITADA' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    {post.status}
+                  </span>
+                  <span className="text-[10px] text-slate-400">
+                    {new Date(post.atualizado_em || post.criado_em).toLocaleDateString('pt-BR')}
+                  </span>
+                </div>
+                <p className="mt-3 line-clamp-1 text-sm font-bold text-slate-800">{post.titulo}</p>
+                <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500">{post.legenda || 'Sem legenda.'}</p>
+                <div className="mt-3 flex items-center justify-between text-[10px] text-slate-400">
+                  <span>{post.criado_por_nome || 'Equipe'}</span>
+                  <span className="inline-flex items-center gap-1 font-semibold text-slate-600">
+                    <Pencil className="h-3 w-3" />
+                    Editar
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        <div className="lg:col-span-7 bg-white border border-slate-200 p-6 rounded-xl shadow-sm space-y-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="md:col-span-2">
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                Título do Post
+              </label>
+              <input
+                type="text"
+                value={titulo}
+                onChange={(event) => setTitulo(event.target.value)}
+                placeholder="Ex: Campanha de julho para Instagram"
+                className="w-full rounded-lg border border-slate-200 p-2.5 text-xs outline-none focus:border-brand-primary"
+              />
+            </div>
+
             <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600">
                 Tipo do Post
               </label>
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setTipo('IMAGEM')}
-                  className={`w-full py-2 border rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
-                    tipo === 'IMAGEM'
-                      ? 'border-brand-secondary bg-brand-light text-brand-secondary'
-                      : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                  className={`flex-1 rounded-lg border py-2 text-xs font-semibold ${
+                    tipo === 'IMAGEM' ? 'border-brand-secondary bg-brand-light text-brand-secondary' : 'border-slate-200 text-slate-700'
                   }`}
                 >
-                  <ImageIcon className="w-4 h-4" />
-                  Imagem (PNG/JPG)
+                  <span className="inline-flex items-center gap-1">
+                    <ImageIcon className="h-4 w-4" />
+                    Imagem
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setTipo('VIDEO')}
-                  className={`w-full py-2 border rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
-                    tipo === 'VIDEO'
-                      ? 'border-brand-secondary bg-brand-light text-brand-secondary'
-                      : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                  className={`flex-1 rounded-lg border py-2 text-xs font-semibold ${
+                    tipo === 'VIDEO' ? 'border-brand-secondary bg-brand-light text-brand-secondary' : 'border-slate-200 text-slate-700'
                   }`}
                 >
-                  <Film className="w-4 h-4" />
-                  Vídeo (MP4)
+                  <span className="inline-flex items-center gap-1">
+                    <Film className="h-4 w-4" />
+                    Vídeo
+                  </span>
                 </button>
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">
-                Criado Por (Perfil Ativo)
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                Criado por
               </label>
-              <div className="bg-slate-50 px-3 py-2 border border-slate-100 rounded-lg text-xs font-semibold text-slate-700">
-                👤 {currentUser.nome}
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-700">
+                {currentUser.nome}
               </div>
             </div>
           </div>
 
-          {/* Drag & Drop Upload Zone */}
           <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">
-              Mídia Anexa (Upload para Google Drive)
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+              Mídia Anexa
             </label>
-            
             <div
               onDragEnter={handleDrag}
               onDragOver={handleDrag}
               onDragLeave={handleDrag}
               onDrop={handleDrop}
-              className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center text-center transition-all ${
+              className={`rounded-xl border-2 border-dashed p-6 text-center transition-all ${
                 dragActive ? 'border-brand-secondary bg-brand-light' : 'border-slate-300 bg-slate-50/50'
               }`}
             >
@@ -303,20 +466,21 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
               />
 
               {uploading ? (
-                <div className="space-y-2 text-slate-500 py-3">
-                   <Loader2 className="w-8 h-8 text-brand-secondary animate-spin mx-auto" />
-                  <p className="text-xs font-medium">Enviando mídia ao backend...</p>
-                  <p className="text-[10px] text-slate-400">Persistindo arquivo e metadados...</p>
+                <div className="space-y-2 text-slate-500">
+                  <Loader2 className="mx-auto h-8 w-8 animate-spin text-brand-secondary" />
+                  <p className="text-xs font-medium">Enviando mídia...</p>
                 </div>
               ) : uploaded ? (
-                <div className="space-y-2 py-2">
-                  <div className="bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-full p-2.5 w-12 h-12 flex items-center justify-center mx-auto mb-1">
-                    <CheckCircle className="w-6 h-6 text-emerald-600" />
+                <div className="space-y-2">
+                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-emerald-200 bg-emerald-100 text-emerald-700">
+                    <CheckCircle className="h-6 w-6" />
                   </div>
-                  <div>
-                    <p className="text-xs font-semibold text-slate-800 truncate max-w-xs mx-auto">{fileName}</p>
-                    <p className="text-[10px] text-slate-500 mt-1">Arquivo vinculado. ID: <code className="bg-slate-200 px-1 py-0.5 rounded text-amber-800">{fileId}</code></p>
-                  </div>
+                  <p className="text-xs font-semibold text-slate-800">{fileName || 'Mídia vinculada'}</p>
+                  {fileId && (
+                    <p className="text-[10px] text-slate-500">
+                      ID: <code className="rounded bg-slate-200 px-1 py-0.5 text-amber-800">{fileId}</code>
+                    </p>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -325,17 +489,18 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
                       setFileId('');
                       setUploaded(false);
                     }}
-                    className="text-xs font-medium text-rose-500 hover:text-rose-600 underline flex items-center gap-1 mx-auto mt-2"
+                    className="mx-auto inline-flex items-center gap-1 text-xs font-medium text-rose-600 hover:underline"
                   >
-                    <Trash className="w-3.5 h-3.5" /> Remover anexo
+                    <Trash className="h-3.5 w-3.5" />
+                    Remover anexo
                   </button>
                 </div>
               ) : (
-                <label htmlFor="file-upload-input" className="cursor-pointer space-y-2 py-3">
-                  <UploadCloud className="w-10 h-10 text-brand-secondary mx-auto" />
+                <label htmlFor="file-upload-input" className="cursor-pointer space-y-2">
+                  <UploadCloud className="mx-auto h-10 w-10 text-brand-secondary" />
                   <div>
-                    <span className="text-xs font-bold text-brand-secondary hover:underline">Arraste mídia ou procure arquivos</span>
-                    <p className="text-[10px] text-slate-400 mt-1">PNG, JPG, JPEG, MP4, MOV ou WEBM</p>
+                    <span className="text-xs font-bold text-brand-secondary hover:underline">Arraste mídia ou selecione um arquivo</span>
+                    <p className="mt-1 text-[10px] text-slate-400">PNG, JPG, JPEG, MP4, MOV ou WEBM</p>
                   </div>
                 </label>
               )}
@@ -343,159 +508,167 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">
-              Legenda do Post
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+              Legenda
             </label>
             <textarea
               rows={4}
-              placeholder="Digite a legenda da publicação..."
               value={legenda}
-              onChange={(e) => setLegenda(e.target.value)}
-              className="w-full text-xs border border-slate-200 rounded-lg p-2.5 outline-none focus:border-brand-primary"
+              onChange={(event) => setLegenda(event.target.value)}
+              placeholder="Digite a legenda da publicação..."
+              className="w-full rounded-lg border border-slate-200 p-2.5 text-xs outline-none focus:border-brand-primary"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">
-              Hashtags Associadas
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+              Hashtags
             </label>
             <input
               type="text"
-              placeholder="#hashtag1 #hashtag2 #hashtag3..."
               value={hashtags}
-              onChange={(e) => setHashtags(e.target.value)}
-              className="w-full text-xs border border-slate-200 rounded-lg p-2.5 outline-none focus:border-brand-primary"
+              onChange={(event) => setHashtags(event.target.value)}
+              placeholder="#marca #campanha"
+              className="w-full rounded-lg border border-slate-200 p-2.5 text-xs outline-none focus:border-brand-primary"
             />
           </div>
 
-          <div className="border-t border-slate-100 pt-4 flex gap-3">
+          <div className="flex flex-wrap gap-3 border-t border-slate-100 pt-4">
             <button
               type="button"
               disabled={saving}
-              onClick={() => savePost('RASCUNHO')}
-              className="w-1/2 py-2.5 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              onClick={() => void persistPost('RASCUNHO')}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >
-              Salvar como Rascunho
+              <Save className="h-4 w-4" />
+              {editingPost ? 'Atualizar rascunho' : 'Salvar rascunho'}
             </button>
+
             <button
               type="button"
               disabled={saving}
-              onClick={() => savePost('PENDENTE')}
-              className="w-1/2 py-2.5 bg-brand-secondary hover:bg-brand-primary text-brand-darker rounded-lg text-xs font-bold shadow hover:shadow-brand-secondary/20 transition-all flex items-center justify-center gap-2 border border-brand-primary/10"
+              onClick={() => void persistPost('PENDENTE')}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-brand-secondary px-4 py-2.5 text-xs font-bold text-brand-darker hover:bg-brand-primary"
             >
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Enviar para Aprovação'}
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              Enviar para aprovação
             </button>
+
+            {editingPost && (
+              <>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={resetForm}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <XCircle className="h-4 w-4" />
+                  Cancelar edição
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void handleDeleteDraft()}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                >
+                  <Trash className="h-4 w-4" />
+                  Excluir
+                </button>
+              </>
+            )}
           </div>
         </div>
 
-        {/* AI Caption Assistant Pane */}
         <div className="lg:col-span-5 bg-gradient-to-br from-slate-50 to-brand-light/30 border border-slate-200 p-6 rounded-xl shadow-sm self-start space-y-4">
           <div className="flex items-center gap-1.5">
-            <div className="p-1 px-1.5 bg-brand-secondary text-brand-darker rounded-lg font-bold">
-              <Sparkles className="w-4 h-4" />
+            <div className="rounded-lg bg-brand-secondary p-1 px-1.5 text-brand-darker">
+              <Sparkles className="h-4 w-4" />
             </div>
             <div>
-              <h3 className="font-semibold text-sm text-slate-800">Redação Criativa Gemini AI</h3>
-              <p className="text-[11px] text-slate-500">Desenvolvido com o modelo Inteligente do Google.</p>
+              <h3 className="text-sm font-semibold text-slate-800">Redação com IA</h3>
+              <p className="text-[11px] text-slate-500">Use o Gemini para rascunhar legenda e hashtags.</p>
             </div>
           </div>
 
-          <div className="bg-white p-4 border border-brand-primary/20 rounded-xl space-y-3.5 shadow-sm">
+          <div className="space-y-3.5 rounded-xl border border-brand-primary/20 bg-white p-4 shadow-sm">
             <div>
-              <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wide">
-                Diretrizes de Tom da Marca e Instruções
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                Instruções de tom
               </label>
               <textarea
                 rows={3}
-                placeholder="Ex de tom: Despojado, focado em vendas, inovador, persuasivo contendo piadas leves."
                 value={aiPrompt}
-                onChange={(e) => setAiPrompt(e.target.value)}
-                className="w-full text-xs border border-slate-200 rounded-lg p-2 outline-none focus:border-brand-primary bg-slate-50/50"
+                onChange={(event) => setAiPrompt(event.target.value)}
+                placeholder="Ex: tom corporativo, objetivo e com CTA claro."
+                className="w-full rounded-lg border border-slate-200 bg-slate-50/50 p-2 text-xs outline-none focus:border-brand-primary"
               />
             </div>
 
             <div>
-              <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wide">
-                Número de Hashtags Desejado
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                Quantidade de hashtags
               </label>
               <select
                 value={aiTagsCount}
-                onChange={(e) => setAiTagsCount(Number(e.target.value))}
-                className="w-full text-xs border border-slate-200 rounded-lg p-2 outline-none focus:border-brand-primary bg-white"
+                onChange={(event) => setAiTagsCount(Number(event.target.value))}
+                className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:border-brand-primary"
               >
-                <option value={3}>3 Hashtags Selecionadas</option>
-                <option value={5}>5 Hashtags Direcionadas (Normal)</option>
-                <option value={8}>8 Hashtags Amplas</option>
-                <option value={12}>12 Hashtags Máximas</option>
+                <option value={3}>3 hashtags</option>
+                <option value={5}>5 hashtags</option>
+                <option value={8}>8 hashtags</option>
+                <option value={12}>12 hashtags</option>
               </select>
             </div>
 
             <button
               type="button"
               disabled={aiGenerating}
-              onClick={handleAiGeneration}
-              className="w-full py-2.5 bg-slate-900 hover:bg-slate-950 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-colors duration-150"
+              onClick={() => void handleAiGeneration()}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-900 py-2.5 text-xs font-semibold text-white hover:bg-slate-950"
             >
-              {aiGenerating ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Gerando Legenda...</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4 text-amber-300" />
-                  <span>Sugerir Legenda com IA</span>
-                </>
-              )}
+              {aiGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4 text-amber-300" />}
+              {aiGenerating ? 'Gerando legenda...' : 'Sugerir legenda com IA'}
             </button>
           </div>
 
-          <div className="text-[11px] text-slate-500 bg-slate-100/50 p-3 rounded-lg border border-slate-200/50 leading-relaxed space-y-1">
-            <span className="font-semibold block text-slate-600">💡 Como usar o assistente de legenda?</span>
-            <p>1. Insira um título descritivo no formulário principal.</p>
-            <p>2. Preencha acima instruções de foco (se houver).</p>
-            <p>3. Clique em Sugerir para o Gemini analisar e substituir os campos finais.</p>
-          </div>
-
-          {/* Real-time Post Preview Sandbox */}
           {titulo && (
-            <div className="border border-slate-200 bg-white rounded-xl overflow-hidden shadow-sm pt-3">
-              <span className="text-[10px] font-bold text-slate-400 px-4 uppercase block tracking-wider">Preview Instantâneo do Post</span>
-              <div className="p-4 space-y-3">
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm pt-3">
+              <span className="block px-4 text-[10px] font-bold uppercase tracking-wider text-slate-400">Preview</span>
+              <div className="space-y-3 p-4">
                 <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-full bg-brand-light flex items-center justify-center text-xs font-bold text-brand-secondary border border-brand-primary/10">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full border border-brand-primary/10 bg-brand-light text-xs font-bold text-brand-secondary">
                     IG
                   </div>
                   <div>
-                    <span className="text-xs font-bold text-slate-800 block">suamarca_oficial</span>
-                    <span className="text-[9px] text-slate-400">Simulador de Feed</span>
+                    <span className="block text-xs font-bold text-slate-800">suamarca_oficial</span>
+                    <span className="text-[9px] text-slate-400">Simulador de feed</span>
                   </div>
                 </div>
 
-                {/* Media frame */}
                 {fileUrl ? (
                   tipo === 'VIDEO' ? (
-                    <video src={fileUrl} className="w-full aspect-video rounded-lg object-cover bg-slate-900 border border-slate-100" muted loops controls />
+                    <video src={fileUrl} className="aspect-video w-full rounded-lg border border-slate-100 bg-slate-900 object-cover" muted controls />
                   ) : (
-                    <img src={fileUrl} alt="post preview" className="w-full aspect-video rounded-lg object-cover bg-slate-50 border border-slate-100" referrerPolicy="no-referrer" />
+                    <img src={fileUrl} alt="preview" className="aspect-video w-full rounded-lg border border-slate-100 bg-slate-50 object-cover" referrerPolicy="no-referrer" />
                   )
                 ) : (
-                  <div className="w-full aspect-video bg-slate-50 border border-slate-150 rounded-lg flex flex-col items-center justify-center text-slate-400 gap-1.5">
-                    <ImageIcon className="w-6 h-6 text-slate-300" />
-                    <span className="text-[10px]">Mídia não vinculada ainda</span>
+                  <div className="flex aspect-video w-full flex-col items-center justify-center gap-1.5 rounded-lg border border-slate-150 bg-slate-50 text-slate-400">
+                    <ImageIcon className="h-6 w-6 text-slate-300" />
+                    <span className="text-[10px]">Mídia não vinculada</span>
                   </div>
                 )}
 
                 <div className="space-y-1">
-                  <p className="text-xs text-slate-800 font-semibold line-clamp-1">{titulo}</p>
-                  <p className="text-[11px] text-slate-600 leading-normal line-clamp-3 white-space-pre-wrap">{legenda || 'Preencha a legenda para as visualizações de feed...'}</p>
-                  <p className="text-[11px] text-brand-secondary font-semibold">{hashtags}</p>
+                  <p className="line-clamp-1 text-xs font-semibold text-slate-800">{titulo}</p>
+                  <p className="line-clamp-3 whitespace-pre-wrap text-[11px] leading-normal text-slate-600">
+                    {legenda || 'Preencha a legenda para visualizar o conteúdo final.'}
+                  </p>
+                  <p className="text-[11px] font-semibold text-brand-secondary">{hashtags}</p>
                 </div>
               </div>
             </div>
           )}
         </div>
-
       </div>
     </div>
   );
