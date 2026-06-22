@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Post, PostStatus } from '../types';
+import { Post, PostStatus, Usuario } from '../types';
 import { 
   FileText, Sparkles, UploadCloud, Film, Image as ImageIcon, PlusCircle, CheckCircle, 
   HelpCircle, Trash, Loader2, RefreshCw 
@@ -7,7 +7,7 @@ import {
 
 interface CreatePostProps {
   onPostCreated?: () => void;
-  currentUser: string;
+  currentUser: Usuario;
 }
 
 export default function CreatePost({ onPostCreated, currentUser }: CreatePostProps) {
@@ -160,7 +160,8 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'X-User-Name': currentUser
+          'X-User-Name': currentUser.nome,
+          'X-User-Email': currentUser.email,
         },
         body: JSON.stringify({
           titulo,
@@ -276,7 +277,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
                 Criado Por (Perfil Ativo)
               </label>
               <div className="bg-slate-50 px-3 py-2 border border-slate-100 rounded-lg text-xs font-semibold text-slate-700">
-                👤 {currentUser}
+                👤 {currentUser.nome}
               </div>
             </div>
           </div>

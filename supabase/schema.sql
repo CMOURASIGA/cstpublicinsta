@@ -2,12 +2,31 @@ create extension if not exists pgcrypto;
 
 create table if not exists usuarios (
   id uuid primary key default gen_random_uuid(),
+  auth_user_id uuid,
+  pessoa_id uuid,
   nome text not null,
   email text not null unique,
-  perfil text not null check (perfil in ('USUARIO', 'ADMINISTRADOR')),
-  ativo boolean not null default true,
-  criado_em timestamptz not null default now()
+  perfil text not null default 'OPERADOR',
+  status text not null default 'ATIVO',
+  origem_dado text not null default 'SISTEMA',
+  data_importacao timestamptz,
+  id_origem_planilha text,
+  ultima_sincronizacao timestamptz,
+  criado_via_sistema boolean not null default true,
+  perfil_publicacao text not null default 'CRIADOR' check (perfil_publicacao in ('CRIADOR', 'APROVADOR', 'ADMIN')),
+  criado_em timestamptz not null default now(),
+  atualizado_em timestamptz not null default now()
 );
+
+alter table usuarios
+  add column if not exists perfil_publicacao text not null default 'CRIADOR';
+
+alter table usuarios
+  drop constraint if exists usuarios_perfil_publicacao_check;
+
+alter table usuarios
+  add constraint usuarios_perfil_publicacao_check
+  check (perfil_publicacao in ('CRIADOR', 'APROVADOR', 'ADMIN'));
 
 create table if not exists posts (
   id uuid primary key default gen_random_uuid(),

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Post, PostStatus } from '../types';
+import { Post, PostStatus, Usuario } from '../types';
 import { 
   Check, X, Edit3, Calendar, Send, AlertTriangle, Play, FileText, Image as ImageIcon, 
   Film, Loader2, ClipboardCheck, ArrowRight, Eye, Clock, User 
@@ -7,7 +7,7 @@ import {
 
 interface ApproveListProps {
   onWorkflowComplete?: () => void;
-  currentUser: string;
+  currentUser: Usuario;
 }
 
 export default function ApproveList({ onWorkflowComplete, currentUser }: ApproveListProps) {
@@ -82,7 +82,8 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
         method: 'PUT',
         headers: { 
           'Content-Type': 'application/json',
-          'X-User-Name': currentUser
+          'X-User-Name': currentUser.nome,
+          'X-User-Email': currentUser.email,
         },
         body: JSON.stringify({
           legenda: editedLegenda,
@@ -108,7 +109,8 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'X-User-Name': currentUser
+          'X-User-Name': currentUser.nome,
+          'X-User-Email': currentUser.email,
         },
         body: JSON.stringify({
           action: 'instant'
@@ -135,7 +137,8 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'X-User-Name': currentUser
+          'X-User-Name': currentUser.nome,
+          'X-User-Email': currentUser.email,
         },
         body: JSON.stringify({
           action: 'schedule',
@@ -166,7 +169,8 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'X-User-Name': currentUser
+          'X-User-Name': currentUser.nome,
+          'X-User-Email': currentUser.email,
         },
         body: JSON.stringify({
           feedback: rejectReason

@@ -1,8 +1,11 @@
+export type PerfilPublicacao = 'CRIADOR' | 'APROVADOR' | 'ADMIN';
+
 export interface Usuario {
   id: string; // UUID or string
   nome: string;
   email: string;
   perfil: 'USUARIO' | 'ADMINISTRADOR';
+  perfil_publicacao?: PerfilPublicacao;
   ativo: boolean;
   criado_em: string;
 }

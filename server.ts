@@ -4,7 +4,7 @@ import dotenv from "dotenv";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
-import { HistoricoPost, LogMessage, Post, SettingsConfig, Usuario } from "./src/types";
+import { HistoricoPost, LogMessage, PerfilPublicacao, Post, SettingsConfig, Usuario } from "./src/types";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 dotenv.config();
@@ -60,6 +60,24 @@ interface SupabaseSchemaState {
   checkedAt: number;
 }
 
+interface ActingUser {
+  id: string;
+  nome: string;
+  email: string;
+  perfil: Usuario["perfil"];
+  perfil_publicacao: PerfilPublicacao;
+  ativo: boolean;
+}
+
+class HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 interface GoogleAccessTokenResponse {
   access_token: string;
   expires_in?: number;
@@ -75,18 +93,29 @@ interface DriveFolderMap {
 
 const defaultUsers: Usuario[] = [
   {
-    id: "user-admin",
+    id: "user-admin-cmoura",
     nome: "Carlos Moura",
-    email: "admin@example.com",
+    email: "cmourasiga@gmail.com",
     perfil: "ADMINISTRADOR",
+    perfil_publicacao: "ADMIN",
     ativo: true,
     criado_em: new Date().toISOString(),
   },
   {
-    id: "user-marketing",
+    id: "user-creator-juliana",
     nome: "Juliana Santos",
-    email: "marketing@example.com",
+    email: "juliana@agencyflow.com",
     perfil: "USUARIO",
+    perfil_publicacao: "CRIADOR",
+    ativo: true,
+    criado_em: new Date().toISOString(),
+  },
+  {
+    id: "user-approver-operacoes",
+    nome: "Mariana Lima",
+    email: "mariana.aprovacao@agencyflow.com",
+    perfil: "USUARIO",
+    perfil_publicacao: "APROVADOR",
     ativo: true,
     criado_em: new Date().toISOString(),
   },
@@ -102,6 +131,13 @@ const memoryStore: MemoryStore = {
 const REQUIRED_SUPABASE_TABLES = ["posts", "usuarios", "historico_posts", "logs"] as const;
 const SCHEMA_CACHE_TTL_MS = 60_000;
 let supabaseSchemaCache: SupabaseSchemaState | null = null;
+let usuariosRoleColumnAvailableCache: boolean | null = null;
+let usuariosColumnsCache: string[] | null = null;
+const USER_ROLE_BY_EMAIL: Record<string, PerfilPublicacao> = {
+  "cmourasiga@gmail.com": "ADMIN",
+  "juliana@agencyflow.com": "CRIADOR",
+  "mariana.aprovacao@agencyflow.com": "APROVADOR",
+};
 
 let aiClient: GoogleGenAI | null = null;
 
@@ -294,6 +330,61 @@ async function canUseRealMode(): Promise<boolean> {
   return canUseSupabase();
 }
 
+async function hasUsuariosRoleColumn(): Promise<boolean> {
+  const columns = await getUsuariosColumns();
+  usuariosRoleColumnAvailableCache = columns.includes("perfil_publicacao");
+  return usuariosRoleColumnAvailableCache;
+}
+
+async function getUsuariosColumns(): Promise<string[]> {
+  if (usuariosColumnsCache) {
+    return usuariosColumnsCache;
+  }
+
+  const config = getRuntimeConfig();
+  if (!(await canUseSupabase())) {
+    return [];
+  }
+
+  const response = await fetch(`${config.supabaseUrl}/rest/v1/`, {
+    headers: {
+      apikey: config.supabaseServiceRoleKey,
+      Authorization: `Bearer ${config.supabaseServiceRoleKey}`,
+      Accept: "application/openapi+json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao ler metadata do schema de usuarios: ${await response.text()}`);
+  }
+
+  const openapi = (await response.json()) as {
+    definitions?: Record<string, { properties?: Record<string, unknown> }>;
+  };
+
+  usuariosColumnsCache = Object.keys(openapi.definitions?.usuarios?.properties || {});
+  return usuariosColumnsCache;
+}
+
+function mapSupabaseUserRecord(record: Record<string, unknown>): Usuario {
+  const email = String(record.email || "");
+  const perfil = inferPerfilFromRawValue(record.perfil);
+  const perfil_publicacao =
+    USER_ROLE_BY_EMAIL[email.toLowerCase()] ||
+    inferPerfilPublicacaoFromRawValue(record.perfil_publicacao, record.perfil) ||
+    (perfil === "ADMINISTRADOR" ? "ADMIN" : "CRIADOR");
+
+  return {
+    id: String(record.id || randomUUID()),
+    nome: String(record.nome || ""),
+    email,
+    perfil,
+    perfil_publicacao,
+    ativo: record.ativo === undefined ? String(record.status || "ATIVO").toUpperCase() !== "INATIVO" : Boolean(record.ativo),
+    criado_em: String(record.criado_em || new Date().toISOString()),
+  };
+}
+
 async function getSettingsView(): Promise<SettingsConfig> {
   const config = getRuntimeConfig();
   const schemaState = await inspectSupabaseSchema();
@@ -345,6 +436,53 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function normalizePerfilPublicacao(user: Partial<Usuario>): PerfilPublicacao {
+  const emailRole = USER_ROLE_BY_EMAIL[String(user.email || "").toLowerCase()];
+  if (emailRole) {
+    return emailRole;
+  }
+
+  if (user.perfil_publicacao === "CRIADOR" || user.perfil_publicacao === "APROVADOR" || user.perfil_publicacao === "ADMIN") {
+    return user.perfil_publicacao;
+  }
+
+  if (user.perfil === "ADMINISTRADOR") {
+    return "ADMIN";
+  }
+
+  return "CRIADOR";
+}
+
+function toActingUser(user: Usuario): ActingUser {
+  return {
+    id: user.id,
+    nome: user.nome,
+    email: user.email,
+    perfil: user.perfil,
+    perfil_publicacao: normalizePerfilPublicacao(user),
+    ativo: user.ativo,
+  };
+}
+
+function inferPerfilFromRawValue(value: unknown): Usuario["perfil"] {
+  const normalized = String(value || "").toUpperCase();
+  if (normalized === "ADMIN" || normalized === "ADMINISTRADOR") {
+    return "ADMINISTRADOR";
+  }
+  return "USUARIO";
+}
+
+function inferPerfilPublicacaoFromRawValue(value: unknown, fallbackPerfil?: unknown): PerfilPublicacao {
+  const normalized = String(value || fallbackPerfil || "").toUpperCase();
+  if (normalized === "ADMIN" || normalized === "ADMINISTRADOR") {
+    return "ADMIN";
+  }
+  if (normalized === "APROVADOR") {
+    return "APROVADOR";
+  }
+  return "CRIADOR";
 }
 
 function sanitizeId(value: string): string {
@@ -550,20 +688,69 @@ async function listUsers(): Promise<Usuario[]> {
     return [...memoryStore.usuarios];
   }
 
-  const users = await supabaseRequest<Usuario[]>("usuarios?select=*&order=criado_em.asc");
-  if (users.length > 0) {
-    return users;
+  const columns = await getUsuariosColumns();
+  const roleColumnAvailable = columns.includes("perfil_publicacao");
+  const selectColumns = ["id", "nome", "email", "perfil", "criado_em"];
+  if (columns.includes("status")) selectColumns.push("status");
+  if (columns.includes("ativo")) selectColumns.push("ativo");
+  if (roleColumnAvailable) selectColumns.push("perfil_publicacao");
+  const orderColumn = columns.includes("criado_em") ? "criado_em.asc" : "email.asc";
+
+  const usersRaw = await supabaseRequest<Record<string, unknown>[]>(
+    `usuarios?select=${selectColumns.join(",")}&order=${orderColumn}`,
+  );
+  const users = usersRaw.map(mapSupabaseUserRecord);
+  const existingEmails = new Set(users.map((user) => user.email.toLowerCase()).filter(Boolean));
+  const missingDefaults = defaultUsers.filter((user) => !existingEmails.has(user.email.toLowerCase()));
+  const cmoura = users.find((user) => user.email.toLowerCase() === "cmourasiga@gmail.com");
+  const cmouraNeedsAdminUpdate =
+    cmoura &&
+    (cmoura.perfil !== "ADMINISTRADOR" || normalizePerfilPublicacao(cmoura) !== "ADMIN");
+
+  if (missingDefaults.length > 0 || cmouraNeedsAdminUpdate) {
+    const payload = defaultUsers.map((user) => {
+      const base = {
+        nome: user.nome,
+        email: user.email,
+        perfil: roleColumnAvailable ? user.perfil : "OPERADOR",
+      } as Record<string, unknown>;
+
+      if (roleColumnAvailable) {
+        base.perfil_publicacao = normalizePerfilPublicacao(user);
+      }
+
+      if (columns.includes("status")) {
+        base.status = user.ativo ? "ATIVO" : "INATIVO";
+      }
+
+      if (columns.includes("ativo")) {
+        base.ativo = user.ativo;
+      }
+
+      if (columns.includes("origem_dado")) {
+        base.origem_dado = "SISTEMA";
+      }
+
+      if (columns.includes("criado_via_sistema")) {
+        base.criado_via_sistema = true;
+      }
+
+      return base;
+    });
+
+    await supabaseRequest<Record<string, unknown>[]>("usuarios?on_conflict=email", {
+      method: "POST",
+      headers: {
+        Prefer: "resolution=merge-duplicates,return=representation",
+      },
+      body: JSON.stringify(payload),
+    });
   }
 
-  await supabaseRequest<Usuario[]>("usuarios", {
-    method: "POST",
-    headers: {
-      Prefer: "return=representation",
-    },
-    body: JSON.stringify(defaultUsers),
-  });
-
-  return supabaseRequest<Usuario[]>("usuarios?select=*&order=criado_em.asc");
+  const finalUsersRaw = await supabaseRequest<Record<string, unknown>[]>(
+    `usuarios?select=${selectColumns.join(",")}&order=${orderColumn}`,
+  );
+  return finalUsersRaw.map(mapSupabaseUserRecord);
 }
 
 async function addLog(
@@ -1144,6 +1331,60 @@ function getCurrentUserName(headerValue: string | string[] | undefined, fallback
   return headerValue || fallback;
 }
 
+function getCurrentUserEmail(headerValue: string | string[] | undefined): string {
+  if (Array.isArray(headerValue)) {
+    return headerValue[0] || "";
+  }
+  return headerValue || "";
+}
+
+async function getActingUserFromRequest(req: express.Request): Promise<ActingUser> {
+  const requestedEmail = getCurrentUserEmail(req.headers["x-user-email"]).trim().toLowerCase();
+  const requestedName = getCurrentUserName(req.headers["x-user-name"], "").trim().toLowerCase();
+  const users = await listUsers();
+
+  let match =
+    users.find((user) => requestedEmail && user.email.toLowerCase() === requestedEmail) ||
+    users.find((user) => requestedName && user.nome.toLowerCase() === requestedName);
+
+  if (!match) {
+    match =
+      users.find((user) => user.email.toLowerCase() === "cmourasiga@gmail.com") ||
+      users.find((user) => normalizePerfilPublicacao(user) === "ADMIN") ||
+      users[0];
+  }
+
+  if (!match) {
+    throw new Error("Nenhum usuário disponível na base de usuários.");
+  }
+
+  if (!match.ativo) {
+    throw new Error(`Usuário '${match.email}' está inativo.`);
+  }
+
+  return toActingUser(match);
+}
+
+function canCreatePosts(user: ActingUser): boolean {
+  return user.perfil_publicacao === "CRIADOR" || user.perfil_publicacao === "ADMIN";
+}
+
+function canApprovePosts(user: ActingUser): boolean {
+  return user.perfil_publicacao === "APROVADOR" || user.perfil_publicacao === "ADMIN";
+}
+
+function assertCanCreatePosts(user: ActingUser) {
+  if (!canCreatePosts(user)) {
+    throw new HttpError(403, `Usuário '${user.email}' não possui permissão para criar publicações.`);
+  }
+}
+
+function assertCanApprovePosts(user: ActingUser) {
+  if (!canApprovePosts(user)) {
+    throw new HttpError(403, `Usuário '${user.email}' não possui permissão para aprovar ou publicar.`);
+  }
+}
+
 function parseBody<T>(value: T | undefined, fallback: T): T {
   return value === undefined ? fallback : value;
 }
@@ -1156,8 +1397,9 @@ function respondWithError(
   status = 500,
 ) {
   const detail = maskError(error);
+  const resolvedStatus = error instanceof HttpError ? error.status : status;
   void addLog(service, "error", message, { error: detail });
-  res.status(status).json({ success: false, error: detail });
+  res.status(resolvedStatus).json({ success: false, error: detail });
 }
 
 app.get("/api/posts", async (_req, res) => {
@@ -1182,7 +1424,8 @@ app.get("/api/posts/:id", async (req, res) => {
 
 app.post("/api/posts", async (req, res) => {
   try {
-    const username = getCurrentUserName(req.headers["x-user-name"], "Sistema");
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanCreatePosts(actingUser);
     const now = new Date().toISOString();
     const created = await createPostRecord({
       titulo: parseBody(req.body.titulo, "Sem Título"),
@@ -1194,13 +1437,13 @@ app.post("/api/posts", async (req, res) => {
       hashtags: parseBody(req.body.hashtags, ""),
       criado_em: now,
       atualizado_em: now,
-      criado_por_nome: username,
+      criado_por_nome: actingUser.nome,
     });
 
     await createHistoryRecord({
       post_id: created.id,
       post_titulo: created.titulo,
-      usuario: username,
+      usuario: actingUser.nome,
       acao: created.status === "PENDENTE" ? "Envio para Aprovação" : "Criação de Post",
       observacao:
         created.status === "PENDENTE"
@@ -1227,7 +1470,8 @@ app.put("/api/posts/:id", async (req, res) => {
       return res.status(404).json({ error: "Post não encontrado." });
     }
 
-    const username = getCurrentUserName(req.headers["x-user-name"], "Sistema");
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanCreatePosts(actingUser);
     const next = await updatePostRecord(req.params.id, {
       titulo: req.body.titulo ?? existing.titulo,
       legenda: req.body.legenda ?? existing.legenda,
@@ -1243,7 +1487,7 @@ app.put("/api/posts/:id", async (req, res) => {
     await createHistoryRecord({
       post_id: next.id,
       post_titulo: next.titulo,
-      usuario: username,
+      usuario: actingUser.nome,
       acao: "Edição de Post",
       observacao: "Campos do post atualizados no painel.",
       criado_em: new Date().toISOString(),
@@ -1261,6 +1505,8 @@ app.put("/api/posts/:id", async (req, res) => {
 
 app.delete("/api/posts/:id", async (req, res) => {
   try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanCreatePosts(actingUser);
     const deleted = await deletePostRecord(req.params.id);
     if (!deleted) {
       return res.status(404).json({ error: "Post não encontrado." });
@@ -1269,7 +1515,7 @@ app.delete("/api/posts/:id", async (req, res) => {
     await createHistoryRecord({
       post_id: deleted.id,
       post_titulo: deleted.titulo,
-      usuario: getCurrentUserName(req.headers["x-user-name"], "Sistema"),
+      usuario: actingUser.nome,
       acao: "Remoção de Post",
       observacao: "Post excluído do sistema.",
       criado_em: new Date().toISOString(),
@@ -1287,6 +1533,8 @@ app.delete("/api/posts/:id", async (req, res) => {
 
 app.post("/api/posts/:id/submit", async (req, res) => {
   try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanCreatePosts(actingUser);
     const post = await getPostById(req.params.id);
     if (!post) {
       return res.status(404).json({ error: "Post não encontrado." });
@@ -1301,7 +1549,7 @@ app.post("/api/posts/:id/submit", async (req, res) => {
     await createHistoryRecord({
       post_id: next.id,
       post_titulo: next.titulo,
-      usuario: getCurrentUserName(req.headers["x-user-name"], "Sistema"),
+      usuario: actingUser.nome,
       acao: "Envio para Aprovação",
       observacao: "Post encaminhado para moderação.",
       criado_em: new Date().toISOString(),
@@ -1315,12 +1563,13 @@ app.post("/api/posts/:id/submit", async (req, res) => {
 
 app.post("/api/posts/:id/reject", async (req, res) => {
   try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanApprovePosts(actingUser);
     const post = await getPostById(req.params.id);
     if (!post) {
       return res.status(404).json({ error: "Post não encontrado." });
     }
 
-    const username = getCurrentUserName(req.headers["x-user-name"], "Sistema");
     const next = await updatePostRecord(req.params.id, {
       status: "REJEITADA",
       atualizado_em: new Date().toISOString(),
@@ -1330,7 +1579,7 @@ app.post("/api/posts/:id/reject", async (req, res) => {
     await createHistoryRecord({
       post_id: next.id,
       post_titulo: next.titulo,
-      usuario: username,
+      usuario: actingUser.nome,
       acao: "Rejeitado",
       observacao: req.body.feedback || "Post rejeitado para ajustes editoriais.",
       criado_em: new Date().toISOString(),
@@ -1349,12 +1598,13 @@ app.post("/api/posts/:id/reject", async (req, res) => {
 
 app.post("/api/posts/:id/approve", async (req, res) => {
   try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanApprovePosts(actingUser);
     const post = await getPostById(req.params.id);
     if (!post) {
       return res.status(404).json({ error: "Post não encontrado." });
     }
 
-    const username = getCurrentUserName(req.headers["x-user-name"], "Sistema");
     const action = req.body.action === "schedule" ? "schedule" : "instant";
 
     if (action === "schedule") {
@@ -1373,7 +1623,7 @@ app.post("/api/posts/:id/approve", async (req, res) => {
       await createHistoryRecord({
         post_id: next.id,
         post_titulo: next.titulo,
-        usuario: username,
+        usuario: actingUser.nome,
         acao: "Agendado",
         observacao: `Post agendado para ${appointmentTime}.`,
         criado_em: new Date().toISOString(),
@@ -1390,13 +1640,13 @@ app.post("/api/posts/:id/approve", async (req, res) => {
     await createHistoryRecord({
       post_id: post.id,
       post_titulo: post.titulo,
-      usuario: username,
+      usuario: actingUser.nome,
       acao: "Aprovado",
       observacao: "Aprovação concedida para publicação imediata.",
       criado_em: new Date().toISOString(),
     });
 
-    const published = await publishPost(post, username);
+    const published = await publishPost(post, actingUser.nome);
     res.json({ success: true, post: published });
   } catch (error) {
     if (req.params.id) {
@@ -1416,12 +1666,13 @@ app.post("/api/posts/:id/approve", async (req, res) => {
 
 app.post("/api/posts/aprovar", async (req, res) => {
   try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanApprovePosts(actingUser);
     const post = await getPostById(req.body.id);
     if (!post) {
       return res.status(404).json({ error: "Post não encontrado." });
     }
 
-    const username = getCurrentUserName(req.headers["x-user-name"], "Sistema");
     const action = req.body.action === "schedule" ? "schedule" : "instant";
 
     if (action === "schedule") {
@@ -1440,7 +1691,7 @@ app.post("/api/posts/aprovar", async (req, res) => {
       await createHistoryRecord({
         post_id: next.id,
         post_titulo: next.titulo,
-        usuario: username,
+        usuario: actingUser.nome,
         acao: "Agendado",
         observacao: `Post agendado para ${appointmentTime}.`,
         criado_em: new Date().toISOString(),
@@ -1449,7 +1700,7 @@ app.post("/api/posts/aprovar", async (req, res) => {
       return res.json({ success: true, post: next });
     }
 
-    const published = await publishPost(post, username);
+    const published = await publishPost(post, actingUser.nome);
     return res.json({ success: true, post: published });
   } catch (error) {
     respondWithError(res, error, "Instagram API", "Falha ao aprovar/publicar post.");
@@ -1458,12 +1709,13 @@ app.post("/api/posts/aprovar", async (req, res) => {
 
 app.post("/api/posts/rejeitar", async (req, res) => {
   try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanApprovePosts(actingUser);
     const post = await getPostById(req.body.id);
     if (!post) {
       return res.status(404).json({ error: "Post não encontrado." });
     }
 
-    const username = getCurrentUserName(req.headers["x-user-name"], "Sistema");
     const next = await updatePostRecord(post.id, {
       status: "REJEITADA",
       atualizado_em: new Date().toISOString(),
@@ -1473,7 +1725,7 @@ app.post("/api/posts/rejeitar", async (req, res) => {
     await createHistoryRecord({
       post_id: next.id,
       post_titulo: next.titulo,
-      usuario: username,
+      usuario: actingUser.nome,
       acao: "Rejeitado",
       observacao: req.body.feedback || "Post rejeitado para ajustes editoriais.",
       criado_em: new Date().toISOString(),
@@ -1487,11 +1739,13 @@ app.post("/api/posts/rejeitar", async (req, res) => {
 
 app.post("/api/posts/publicar", async (req, res) => {
   try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanApprovePosts(actingUser);
     const post = await getPostById(req.body.id);
     if (!post) {
       return res.status(404).json({ error: "Post não encontrado." });
     }
-    const published = await publishPost(post, getCurrentUserName(req.headers["x-user-name"], "Sistema"));
+    const published = await publishPost(post, actingUser.nome);
     res.json({ success: true, post: published });
   } catch (error) {
     respondWithError(res, error, "Instagram API", "Falha ao publicar post.");
@@ -1716,8 +1970,9 @@ app.get("/api/google/oauth/callback", async (req, res) => {
 
 app.post("/api/google/import", async (req, res) => {
   try {
-    const author = getCurrentUserName(req.headers["x-user-name"], "Importador Google Drive");
-    const imported = await importGoogleDrivePosts(author);
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanCreatePosts(actingUser);
+    const imported = await importGoogleDrivePosts(actingUser.nome);
     res.json({
       success: true,
       importedCount: imported.length,
