@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { HistoricoPost, PostStatus } from '../types';
+import { apiFetch } from '../lib/api';
 import { Search, History, Calendar, User, Filter, AlertCircle } from 'lucide-react';
 
 export default function HistoryList() {
@@ -13,7 +14,7 @@ export default function HistoryList() {
 
   const fetchHistory = async () => {
     try {
-      const res = await fetch('/api/history');
+      const res = await apiFetch('/api/history');
       const data = await res.json();
       if (data.history) {
         setHistory(data.history);

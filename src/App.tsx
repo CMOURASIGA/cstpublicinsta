@@ -5,8 +5,10 @@ import ApproveList from './components/ApproveList';
 import HistoryList from './components/HistoryList';
 import SettingsSync from './components/SettingsSync';
 import SimulatorLogs from './components/SimulatorLogs';
-import LoginGate from './components/LoginGate';
+import LoginScreen from './components/LoginScreen';
 import { PerfilPublicacao, Usuario } from './types';
+import { apiFetch } from './lib/api';
+import { getSupabaseClient } from './lib/supabase';
 import {
   LayoutDashboard,
   PlusCircle,
@@ -17,8 +19,6 @@ import {
   ChevronDown,
   LogOut,
 } from 'lucide-react';
-
-const SESSION_KEY = 'instaflow-current-user-id';
 
 function getRole(user: Usuario | null): PerfilPublicacao {
   if (!user) return 'CRIADOR';
@@ -33,42 +33,28 @@ function getRoleLabel(role: PerfilPublicacao) {
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<string>('dashboard');
-  const [users, setUsers] = useState<Usuario[]>([]);
-  const [currentUserId, setCurrentUserId] = useState<string>('');
-  const [usersLoading, setUsersLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState<Usuario | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [profileDropdown, setProfileDropdown] = useState(false);
   const [pendingBadge, setPendingBadge] = useState<number>(0);
 
-  const currentUser = useMemo(
-    () => users.find((user) => user.id === currentUserId) || null,
-    [users, currentUserId],
-  );
   const currentRole = getRole(currentUser);
   const canCreate = currentRole === 'CRIADOR' || currentRole === 'ADMIN';
   const canApprove = currentRole === 'APROVADOR' || currentRole === 'ADMIN';
 
-  const fetchUsers = () => {
-    setUsersLoading(true);
-    fetch('/api/users')
-      .then((res) => res.json())
-      .then((data) => {
-        const nextUsers: Usuario[] = data.users || [];
-        setUsers(nextUsers);
+  const loadCurrentUser = async () => {
+    const res = await apiFetch('/api/auth/me');
+    const data = await res.json();
 
-        const savedUserId = window.localStorage.getItem(SESSION_KEY) || '';
-        if (savedUserId && nextUsers.some((user) => user.id === savedUserId)) {
-          setCurrentUserId(savedUserId);
-        } else {
-          setCurrentUserId('');
-          window.localStorage.removeItem(SESSION_KEY);
-        }
-      })
-      .catch((err) => console.error(err))
-      .finally(() => setUsersLoading(false));
+    if (!res.ok || !data.user) {
+      throw new Error(data.error || 'Falha ao carregar o usuário autenticado.');
+    }
+
+    setCurrentUser(data.user as Usuario);
   };
 
   const fetchBadgeCount = () => {
-    fetch('/api/posts')
+    apiFetch('/api/posts')
       .then((res) => res.json())
       .then((data) => {
         if (data.posts) {
@@ -81,7 +67,7 @@ export default function App() {
 
   const handleSimulateTick = async (): Promise<number> => {
     try {
-      const res = await fetch('/api/simulate-tick', { method: 'POST' });
+      const res = await apiFetch('/api/simulate-tick', { method: 'POST' });
       const data = await res.json();
       fetchBadgeCount();
       return data.processedCount || 0;
@@ -92,7 +78,54 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchUsers();
+    let active = true;
+    let unsubscribe = () => undefined;
+
+    const setupAuth = async () => {
+      try {
+        const supabase = await getSupabaseClient();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        if (session) {
+          await loadCurrentUser();
+        }
+
+        const subscription = supabase.auth.onAuthStateChange((_event, nextSession) => {
+          if (!active) return;
+
+          if (!nextSession) {
+            setCurrentUser(null);
+            setCurrentScreen('dashboard');
+            setProfileDropdown(false);
+            setPendingBadge(0);
+            return;
+          }
+
+          void loadCurrentUser().catch((err) => {
+            console.error(err);
+            setCurrentUser(null);
+          });
+        });
+
+        unsubscribe = () => subscription.data.subscription.unsubscribe();
+      } catch (err) {
+        console.error(err);
+        setCurrentUser(null);
+      } finally {
+        if (active) {
+          setAuthLoading(false);
+        }
+      }
+    };
+
+    void setupAuth();
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -108,21 +141,28 @@ export default function App() {
     };
   }, [currentUser?.id]);
 
-  const handleLogin = (userId: string) => {
-    window.localStorage.setItem(SESSION_KEY, userId);
-    setCurrentUserId(userId);
-    setProfileDropdown(false);
+  const handleLogin = async () => {
+    await loadCurrentUser();
   };
 
-  const handleLogout = () => {
-    window.localStorage.removeItem(SESSION_KEY);
-    setCurrentUserId('');
+  const handleLogout = async () => {
+    const supabase = await getSupabaseClient();
+    await supabase.auth.signOut();
+    setCurrentUser(null);
     setProfileDropdown(false);
     setCurrentScreen('dashboard');
   };
 
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-sm text-slate-200">
+        Carregando autenticação...
+      </div>
+    );
+  }
+
   if (!currentUser) {
-    return <LoginGate loading={usersLoading} users={users} onLogin={handleLogin} />;
+    return <LoginScreen onLoggedIn={handleLogin} />;
   }
 
   const renderActiveScreen = () => {
@@ -301,7 +341,7 @@ export default function App() {
                 <p className="text-[10px] text-slate-400">{currentUser.email}</p>
               </div>
               <button
-                onClick={handleLogout}
+                onClick={() => void handleLogout()}
                 className="w-full text-left px-3 py-2 hover:bg-slate-800/60 flex items-center gap-2 text-rose-300"
               >
                 <LogOut className="w-3.5 h-3.5" />
@@ -352,7 +392,7 @@ export default function App() {
                     <p className="font-semibold text-slate-800">{currentUser.nome}</p>
                     <p className="text-[10px] text-slate-500">{currentUser.email}</p>
                   </div>
-                  <button onClick={handleLogout} className="w-full text-left px-3 py-2 hover:bg-slate-50 font-semibold text-rose-600">
+                  <button onClick={() => void handleLogout()} className="w-full text-left px-3 py-2 hover:bg-slate-50 font-semibold text-rose-600">
                     Sair e trocar usuário
                   </button>
                 </div>

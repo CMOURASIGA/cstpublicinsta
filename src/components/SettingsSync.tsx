@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { SettingsConfig } from '../types';
+import { apiFetch } from '../lib/api';
 import { CheckCircle2, FolderOpen, Info, KeyRound, RefreshCw, Settings, ShieldAlert, Sparkles } from 'lucide-react';
 
 interface SettingsSyncProps {
@@ -60,7 +61,7 @@ export default function SettingsSync({ onSettingsSaved }: SettingsSyncProps) {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/settings');
+      const res = await apiFetch('/api/settings');
       const data = await res.json();
       if (!res.ok || !data.settings) {
         throw new Error(data.error || 'Falha ao carregar as integrações.');

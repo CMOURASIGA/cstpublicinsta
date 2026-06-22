@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Post, PostStatus, Usuario } from '../types';
+import { apiFetch } from '../lib/api';
 import { 
   FileText, Sparkles, UploadCloud, Film, Image as ImageIcon, PlusCircle, CheckCircle, 
   HelpCircle, Trash, Loader2, RefreshCw 
@@ -82,7 +83,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
 
     try {
       const base64Data = await readFileAsDataUrl(file);
-      const res = await fetch('/api/google/upload', {
+      const res = await apiFetch('/api/google/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -121,7 +122,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
     }
     setAiGenerating(true);
     try {
-      const res = await fetch('/api/gemini/generate-caption', {
+      const res = await apiFetch('/api/gemini/generate-caption', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -156,13 +157,9 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
 
     setSaving(true);
     try {
-      const res = await fetch('/api/posts', {
+      const res = await apiFetch('/api/posts', {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-User-Name': currentUser.nome,
-          'X-User-Email': currentUser.email,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           titulo,
           legenda,

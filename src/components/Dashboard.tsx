@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Post, HistoricoPost, PostStatus } from '../types';
+import { apiFetch } from '../lib/api';
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, Cell, PieChart, Pie
 } from 'recharts';
@@ -30,7 +31,7 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
 
   const fetchData = async () => {
     try {
-      const resPosts = await fetch('/api/posts');
+      const resPosts = await apiFetch('/api/posts');
       const dataPosts = await resPosts.json();
       if (dataPosts.posts) {
         setPosts(dataPosts.posts);
@@ -46,7 +47,7 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
         });
       }
 
-      const resHist = await fetch('/api/history');
+      const resHist = await apiFetch('/api/history');
       const dataHist = await resHist.json();
       if (dataHist.history) {
         setHistory(dataHist.history.slice(0, 5)); // Last 5 activities

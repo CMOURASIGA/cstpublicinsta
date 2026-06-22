@@ -69,6 +69,11 @@ interface ActingUser {
   ativo: boolean;
 }
 
+interface AuthenticatedSupabaseUser {
+  id: string;
+  email: string;
+}
+
 class HttpError extends Error {
   status: number;
 
@@ -376,6 +381,7 @@ function mapSupabaseUserRecord(record: Record<string, unknown>): Usuario {
 
   return {
     id: String(record.id || randomUUID()),
+    auth_user_id: record.auth_user_id ? String(record.auth_user_id) : undefined,
     nome: String(record.nome || ""),
     email,
     perfil,
@@ -410,6 +416,16 @@ async function getSettingsView(): Promise<SettingsConfig> {
     secretsStoredInBackend: true,
     readOnly: true,
     missingEnv: config.missingEnv,
+  };
+}
+
+function getPublicRuntimeConfig() {
+  const config = getRuntimeConfig();
+
+  return {
+    appUrl: config.appUrl,
+    supabaseUrl: config.supabaseUrl,
+    supabaseAnonKey: config.supabaseAnonKey,
   };
 }
 
@@ -691,6 +707,7 @@ async function listUsers(): Promise<Usuario[]> {
   const columns = await getUsuariosColumns();
   const roleColumnAvailable = columns.includes("perfil_publicacao");
   const selectColumns = ["id", "nome", "email", "perfil", "criado_em"];
+  if (columns.includes("auth_user_id")) selectColumns.push("auth_user_id");
   if (columns.includes("status")) selectColumns.push("status");
   if (columns.includes("ativo")) selectColumns.push("ativo");
   if (roleColumnAvailable) selectColumns.push("perfil_publicacao");
@@ -751,6 +768,84 @@ async function listUsers(): Promise<Usuario[]> {
     `usuarios?select=${selectColumns.join(",")}&order=${orderColumn}`,
   );
   return finalUsersRaw.map(mapSupabaseUserRecord);
+}
+
+function getAuthorizationToken(headerValue: string | string[] | undefined): string {
+  const rawValue = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  const match = (rawValue || "").match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || "";
+}
+
+async function fetchSupabaseAuthUser(accessToken: string): Promise<AuthenticatedSupabaseUser> {
+  const config = getRuntimeConfig();
+  const response = await fetch(`${config.supabaseUrl}/auth/v1/user`, {
+    headers: {
+      apikey: config.supabaseAnonKey || config.supabaseServiceRoleKey,
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (response.status === 401 || response.status === 403) {
+    throw new HttpError(401, "Sessão inválida ou expirada. Faça login novamente.");
+  }
+
+  if (!response.ok) {
+    throw new Error(`Falha ao validar sessão no Supabase Auth: ${await response.text()}`);
+  }
+
+  const user = (await response.json()) as { id?: string; email?: string };
+  if (!user.id || !user.email) {
+    throw new HttpError(401, "Sessão do Supabase sem identificação de usuário.");
+  }
+
+  return {
+    id: user.id,
+    email: user.email,
+  };
+}
+
+async function linkOperationalUserToAuthIdentity(userId: string, authUserId: string): Promise<void> {
+  const columns = await getUsuariosColumns();
+  if (!columns.includes("auth_user_id")) {
+    return;
+  }
+
+  await supabaseRequest<Record<string, unknown>[]>(`usuarios?id=eq.${sanitizeId(userId)}`, {
+    method: "PATCH",
+    headers: {
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify({
+      auth_user_id: authUserId,
+      atualizado_em: new Date().toISOString(),
+    }),
+  });
+}
+
+async function findOperationalUserByAuthIdentity(authUser: AuthenticatedSupabaseUser): Promise<Usuario | null> {
+  const users = await listUsers();
+  const authUserId = authUser.id.toLowerCase();
+  const email = authUser.email.toLowerCase();
+
+  const linkedUser = users.find((user) => String(user.auth_user_id || "").toLowerCase() === authUserId);
+  if (linkedUser) {
+    return linkedUser;
+  }
+
+  const emailUser = users.find((user) => user.email.toLowerCase() === email);
+  if (!emailUser) {
+    return null;
+  }
+
+  if (!emailUser.auth_user_id) {
+    await linkOperationalUserToAuthIdentity(emailUser.id, authUser.id);
+    return {
+      ...emailUser,
+      auth_user_id: authUser.id,
+    };
+  }
+
+  return emailUser;
 }
 
 async function addLog(
@@ -1339,8 +1434,31 @@ function getCurrentUserEmail(headerValue: string | string[] | undefined): string
 }
 
 async function getActingUserFromRequest(req: express.Request): Promise<ActingUser> {
+  const accessToken = getAuthorizationToken(req.headers.authorization);
+  if (accessToken) {
+    const authUser = await fetchSupabaseAuthUser(accessToken);
+    const operationalUser = await findOperationalUserByAuthIdentity(authUser);
+
+    if (!operationalUser) {
+      throw new HttpError(
+        403,
+        `O usuário autenticado '${authUser.email}' não possui cadastro operacional ativo na tabela usuarios.`,
+      );
+    }
+
+    if (!operationalUser.ativo) {
+      throw new HttpError(403, `Usuário '${operationalUser.email}' está inativo.`);
+    }
+
+    return toActingUser(operationalUser);
+  }
+
   const requestedEmail = getCurrentUserEmail(req.headers["x-user-email"]).trim().toLowerCase();
   const requestedName = getCurrentUserName(req.headers["x-user-name"], "").trim().toLowerCase();
+  if (!requestedEmail && !requestedName) {
+    throw new HttpError(401, "Autenticação obrigatória.");
+  }
+
   const users = await listUsers();
 
   let match =
@@ -1402,8 +1520,9 @@ function respondWithError(
   res.status(resolvedStatus).json({ success: false, error: detail });
 }
 
-app.get("/api/posts", async (_req, res) => {
+app.get("/api/posts", async (req, res) => {
   try {
+    await getActingUserFromRequest(req);
     res.json({ posts: await listPosts() });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar posts.");
@@ -1412,6 +1531,7 @@ app.get("/api/posts", async (_req, res) => {
 
 app.get("/api/posts/:id", async (req, res) => {
   try {
+    await getActingUserFromRequest(req);
     const post = await getPostById(req.params.id);
     if (!post) {
       return res.status(404).json({ error: "Post não encontrado." });
@@ -1754,6 +1874,8 @@ app.post("/api/posts/publicar", async (req, res) => {
 
 async function handleDriveUpload(req: express.Request, res: express.Response) {
   try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanCreatePosts(actingUser);
     const filename = trimEnv(req.body.filename) || `upload-${Date.now()}`;
     const dataUrl = trimEnv(req.body.base64Data);
     const explicitMimeType = trimEnv(req.body.type) || "application/octet-stream";
@@ -2071,8 +2193,9 @@ app.post("/api/meta/webhook", async (req, res) => {
   res.status(200).json({ received: true });
 });
 
-app.post("/api/simulate-tick", async (_req, res) => {
+app.post("/api/simulate-tick", async (req, res) => {
   try {
+    await getActingUserFromRequest(req);
     const processedCount = await runScheduledPublications();
     res.json({ success: true, processedCount });
   } catch (error) {
@@ -2080,24 +2203,27 @@ app.post("/api/simulate-tick", async (_req, res) => {
   }
 });
 
-app.get("/api/history", async (_req, res) => {
+app.get("/api/history", async (req, res) => {
   try {
+    await getActingUserFromRequest(req);
     res.json({ history: await listHistory() });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar histórico.");
   }
 });
 
-app.get("/api/logs", async (_req, res) => {
+app.get("/api/logs", async (req, res) => {
   try {
+    await getActingUserFromRequest(req);
     res.json({ logs: await listLogs() });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar logs.");
   }
 });
 
-app.post("/api/logs/clear", async (_req, res) => {
+app.post("/api/logs/clear", async (req, res) => {
   try {
+    await getActingUserFromRequest(req);
     await clearLogRecords();
     await addLog("Database", "info", "Logs limpos pelo painel.");
     res.json({ success: true });
@@ -2106,8 +2232,25 @@ app.post("/api/logs/clear", async (_req, res) => {
   }
 });
 
-app.get("/api/settings", async (_req, res) => {
+app.get("/api/public-config", (_req, res) => {
   try {
+    res.json({ config: getPublicRuntimeConfig() });
+  } catch (error) {
+    respondWithError(res, error, "Database", "Falha ao carregar configuração pública.", 500);
+  }
+});
+
+app.get("/api/auth/me", async (req, res) => {
+  try {
+    res.json({ user: await getActingUserFromRequest(req) });
+  } catch (error) {
+    respondWithError(res, error, "Database", "Falha ao validar usuário autenticado.", 401);
+  }
+});
+
+app.get("/api/settings", async (req, res) => {
+  try {
+    await getActingUserFromRequest(req);
     res.json({ settings: await getSettingsView() });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao ler estado das integrações.");
@@ -2121,8 +2264,9 @@ app.post("/api/settings", (_req, res) => {
   });
 });
 
-app.get("/api/users", async (_req, res) => {
+app.get("/api/users", async (req, res) => {
   try {
+    await getActingUserFromRequest(req);
     res.json({ users: await listUsers() });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar usuários.");
@@ -2134,6 +2278,7 @@ app.post("/api/gemini/generate-caption", async (req, res) => {
   const count = Number(hashtagsCount) || 5;
 
   try {
+    await getActingUserFromRequest(req);
     const ai = getGeminiClient();
     await addLog("Gemini AI", "info", "Gerando legenda com Gemini.", {
       title,
@@ -2186,7 +2331,15 @@ Use exatamente ${count} hashtags.`,
   }
 });
 
-async function bootstrap() {
+const isVercelRuntime = Boolean(process.env.VERCEL);
+let initializationPromise: Promise<void> | null = null;
+
+export async function initializeApp() {
+  if (initializationPromise) {
+    return initializationPromise;
+  }
+
+  initializationPromise = (async () => {
   try {
     const schema = await inspectSupabaseSchema(true);
     if (!schema.ready) {
@@ -2204,19 +2357,28 @@ async function bootstrap() {
     });
   }
 
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
+    if (!isVercelRuntime) {
+      if (process.env.NODE_ENV !== "production") {
+        const vite = await createViteServer({
+          server: { middlewareMode: true },
+          appType: "spa",
+        });
+        app.use(vite.middlewares);
+      } else {
+        const distPath = path.join(process.cwd(), "dist");
+        app.use(express.static(distPath));
+        app.get("*", (_req, res) => {
+          res.sendFile(path.join(distPath, "index.html"));
+        });
+      }
+    }
+  })();
+
+  return initializationPromise;
+}
+
+async function bootstrap() {
+  await initializeApp();
 
   app.listen(PORT, "0.0.0.0", async () => {
     const settings = await getSettingsView();
@@ -2225,4 +2387,8 @@ async function bootstrap() {
   });
 }
 
-void bootstrap();
+if (!isVercelRuntime) {
+  void bootstrap();
+}
+
+export default app;

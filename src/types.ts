@@ -2,6 +2,7 @@ export type PerfilPublicacao = 'CRIADOR' | 'APROVADOR' | 'ADMIN';
 
 export interface Usuario {
   id: string; // UUID or string
+  auth_user_id?: string;
   nome: string;
   email: string;
   perfil: 'USUARIO' | 'ADMINISTRADOR';

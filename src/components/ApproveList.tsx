@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Post, PostStatus, Usuario } from '../types';
+import { apiFetch } from '../lib/api';
 import { 
   Check, X, Edit3, Calendar, Send, AlertTriangle, Play, FileText, Image as ImageIcon, 
   Film, Loader2, ClipboardCheck, ArrowRight, Eye, Clock, User 
@@ -30,7 +31,7 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
 
   const fetchPending = async () => {
     try {
-      const res = await fetch('/api/posts');
+      const res = await apiFetch('/api/posts');
       const data = await res.json();
       if (data.posts) {
         const pending = data.posts.filter((p: Post) => p.status === 'PENDENTE');
@@ -78,13 +79,9 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
   const handleUpdateCaption = async () => {
     if (!selectedPost) return;
     try {
-      const res = await fetch(`/api/posts/${selectedPost.id}`, {
+      const res = await apiFetch(`/api/posts/${selectedPost.id}`, {
         method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-User-Name': currentUser.nome,
-          'X-User-Email': currentUser.email,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           legenda: editedLegenda,
           hashtags: editedHashtags
@@ -105,13 +102,9 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
     if (!selectedPost) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/posts/${selectedPost.id}/approve`, {
+      const res = await apiFetch(`/api/posts/${selectedPost.id}/approve`, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-User-Name': currentUser.nome,
-          'X-User-Email': currentUser.email,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'instant'
         })
@@ -133,13 +126,9 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
     if (!selectedPost || !scheduleDateTime) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/posts/${selectedPost.id}/approve`, {
+      const res = await apiFetch(`/api/posts/${selectedPost.id}/approve`, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-User-Name': currentUser.nome,
-          'X-User-Email': currentUser.email,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'schedule',
           appointmentTime: new Date(scheduleDateTime).toISOString()
@@ -165,13 +154,9 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
     }
     setLoading(true);
     try {
-      const res = await fetch(`/api/posts/${selectedPost.id}/reject`, {
+      const res = await apiFetch(`/api/posts/${selectedPost.id}/reject`, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-User-Name': currentUser.nome,
-          'X-User-Email': currentUser.email,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           feedback: rejectReason
         })

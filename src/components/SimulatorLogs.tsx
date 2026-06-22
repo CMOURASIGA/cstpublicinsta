@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { LogMessage } from '../types';
+import { apiFetch } from '../lib/api';
 import { Terminal, Trash2, RefreshCw, AlertCircle, CheckCircle2, Info, ArrowUpRight } from 'lucide-react';
 
 interface SimulatorLogsProps {
@@ -13,7 +14,7 @@ export default function SimulatorLogs({ onSimulateTick }: SimulatorLogsProps) {
 
   const fetchLogs = async () => {
     try {
-      const res = await fetch('/api/logs');
+      const res = await apiFetch('/api/logs');
       const data = await res.json();
       if (data.logs) {
         setLogs(data.logs);
@@ -25,7 +26,7 @@ export default function SimulatorLogs({ onSimulateTick }: SimulatorLogsProps) {
 
   const handleClear = async () => {
     try {
-      await fetch('/api/logs/clear', { method: 'POST' });
+      await apiFetch('/api/logs/clear', { method: 'POST' });
       fetchLogs();
     } catch (err) {
       console.error(err);
