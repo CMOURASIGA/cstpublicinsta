@@ -1906,12 +1906,12 @@ ${prompt || "Conte\xFAdo preparado para revis\xE3o e publica\xE7\xE3o no Instagr
     });
   }
 });
-var isVercelRuntime = Boolean(process.env.VERCEL);
 var initializationPromise = null;
-async function initializeApp() {
+async function initializeApp(options) {
   if (initializationPromise) {
     return initializationPromise;
   }
+  const enableStatic = options?.enableStatic ?? false;
   initializationPromise = (async () => {
     try {
       const schema = await inspectSupabaseSchema(true);
@@ -1928,7 +1928,7 @@ async function initializeApp() {
         error: maskError(error)
       });
     }
-    if (!isVercelRuntime) {
+    if (enableStatic) {
       if (process.env.NODE_ENV !== "production") {
         const { createServer: createViteServer } = await import("vite");
         const vite = await createViteServer({
@@ -1946,17 +1946,6 @@ async function initializeApp() {
     }
   })();
   return initializationPromise;
-}
-async function bootstrap() {
-  await initializeApp();
-  app.listen(PORT, "0.0.0.0", async () => {
-    const settings = await getSettingsView();
-    console.log(`[InstaFlow] Server running on http://localhost:${PORT}`);
-    console.log(`[InstaFlow] Requested mode: ${settings.mode} | Operational mode: ${settings.operationalMode}`);
-  });
-}
-if (!isVercelRuntime) {
-  void bootstrap();
 }
 var server_default = app;
 // Annotate the CommonJS export names for ESM import in node:

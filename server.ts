@@ -2330,13 +2330,14 @@ Use exatamente ${count} hashtags.`,
   }
 });
 
-const isVercelRuntime = Boolean(process.env.VERCEL);
 let initializationPromise: Promise<void> | null = null;
 
-export async function initializeApp() {
+export async function initializeApp(options?: { enableStatic?: boolean }) {
   if (initializationPromise) {
     return initializationPromise;
   }
+
+  const enableStatic = options?.enableStatic ?? false;
 
   initializationPromise = (async () => {
   try {
@@ -2356,7 +2357,7 @@ export async function initializeApp() {
     });
   }
 
-    if (!isVercelRuntime) {
+    if (enableStatic) {
       if (process.env.NODE_ENV !== "production") {
         const { createServer: createViteServer } = await import("vite");
         const vite = await createViteServer({
@@ -2375,20 +2376,6 @@ export async function initializeApp() {
   })();
 
   return initializationPromise;
-}
-
-async function bootstrap() {
-  await initializeApp();
-
-  app.listen(PORT, "0.0.0.0", async () => {
-    const settings = await getSettingsView();
-    console.log(`[InstaFlow] Server running on http://localhost:${PORT}`);
-    console.log(`[InstaFlow] Requested mode: ${settings.mode} | Operational mode: ${settings.operationalMode}`);
-  });
-}
-
-if (!isVercelRuntime) {
-  void bootstrap();
 }
 
 export default app;
