@@ -53,6 +53,7 @@ export interface SettingsConfig {
   googleDriveFolderId: string;
   googleConfigured: boolean;
   instagramBusinessId: string;
+  instagramGraphBaseUrl?: string;
   facebookPageId: string;
   instagramConfigured: boolean;
   geminiModel: string;

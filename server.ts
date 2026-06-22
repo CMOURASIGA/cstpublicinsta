@@ -35,7 +35,9 @@ interface RuntimeConfig {
   metaAppSecret: string;
   metaRedirectUri: string;
   instagramAccessToken: string;
+  instagramUserId: string;
   instagramBusinessId: string;
+  instagramGraphBaseUrl: string;
   facebookPageId: string;
   metaVerifyToken: string;
   mediaUrlSigningSecret: string;
@@ -190,7 +192,9 @@ function getRuntimeConfig(): RuntimeConfig {
   const googleClientEmail = trimEnv(process.env.GOOGLE_CLIENT_EMAIL);
   const googlePrivateKey = normalizePrivateKey(process.env.GOOGLE_PRIVATE_KEY);
   const instagramAccessToken = trimEnv(process.env.INSTAGRAM_ACCESS_TOKEN);
+  const instagramUserId = trimEnv(process.env.INSTAGRAM_USER_ID);
   const instagramBusinessId = trimEnv(process.env.INSTAGRAM_BUSINESS_ID);
+  const instagramGraphBaseUrl = trimEnv(process.env.INSTAGRAM_GRAPH_BASE_URL) || "https://graph.facebook.com";
   const facebookPageId = trimEnv(process.env.FACEBOOK_PAGE_ID);
   const graphApiVersion = trimEnv(process.env.GRAPH_API_VERSION) || "v23.0";
   const metaAppId = trimEnv(process.env.META_APP_ID);
@@ -206,7 +210,7 @@ function getRuntimeConfig(): RuntimeConfig {
     googleDriveFolderId &&
       ((googleClientEmail && googlePrivateKey) || (googleClientId && googleClientSecret && googleRefreshToken)),
   );
-  const instagramConfigured = Boolean(instagramAccessToken && instagramBusinessId);
+  const instagramConfigured = Boolean(instagramAccessToken && (instagramUserId || instagramBusinessId));
   const geminiConfigured = Boolean(trimEnv(process.env.GEMINI_API_KEY));
 
   const missingEnv: string[] = [];
@@ -219,7 +223,7 @@ function getRuntimeConfig(): RuntimeConfig {
     );
   }
   if (!instagramAccessToken) missingEnv.push("INSTAGRAM_ACCESS_TOKEN");
-  if (!instagramBusinessId) missingEnv.push("INSTAGRAM_BUSINESS_ID");
+  if (!instagramUserId && !instagramBusinessId) missingEnv.push("INSTAGRAM_USER_ID ou INSTAGRAM_BUSINESS_ID");
 
   const operationalMode: RuntimeMode =
     mode === "REAL" && supabaseConfigured && googleConfigured && instagramConfigured ? "REAL" : "SIMULATOR";
@@ -244,7 +248,9 @@ function getRuntimeConfig(): RuntimeConfig {
     metaAppSecret,
     metaRedirectUri,
     instagramAccessToken,
+    instagramUserId,
     instagramBusinessId,
+    instagramGraphBaseUrl,
     facebookPageId,
     metaVerifyToken,
     mediaUrlSigningSecret,
@@ -399,7 +405,8 @@ async function getSettingsView(): Promise<SettingsConfig> {
     missingSupabaseTables: schemaState.missingTables,
     googleDriveFolderId: config.googleDriveFolderId,
     googleConfigured: config.googleConfigured,
-    instagramBusinessId: config.instagramBusinessId,
+    instagramBusinessId: config.instagramUserId || config.instagramBusinessId,
+    instagramGraphBaseUrl: config.instagramGraphBaseUrl,
     facebookPageId: config.facebookPageId,
     instagramConfigured: config.instagramConfigured,
     geminiModel: config.geminiModel,
@@ -1291,8 +1298,24 @@ async function metaGraphRequest<T>(resource: string, init?: RequestInit): Promis
   return safeParseJson<T>(response);
 }
 
+function getInstagramPublishingActorId(): string {
+  const config = getRuntimeConfig();
+  return config.instagramUserId || config.instagramBusinessId;
+}
+
+async function instagramGraphRequest<T>(resource: string, init?: RequestInit): Promise<T> {
+  const config = getRuntimeConfig();
+  const baseUrl = config.instagramGraphBaseUrl.replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/${config.graphApiVersion}${resource}`, init);
+  if (!response.ok) {
+    throw new Error(`Instagram Graph ${response.status}: ${await response.text()}`);
+  }
+  return safeParseJson<T>(response);
+}
+
 async function createInstagramContainer(post: Post): Promise<string> {
   const config = getRuntimeConfig();
+  const publishingActorId = getInstagramPublishingActorId();
   const body = new URLSearchParams({
     access_token: config.instagramAccessToken,
     caption: buildCaption(post),
@@ -1311,7 +1334,7 @@ async function createInstagramContainer(post: Post): Promise<string> {
     body.set("image_url", post.drive_url);
   }
 
-  const result = await metaGraphRequest<{ id: string }>(`/${config.instagramBusinessId}/media`, {
+  const result = await instagramGraphRequest<{ id: string }>(`/${publishingActorId}/media`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -1326,7 +1349,7 @@ async function waitForContainerReady(containerId: string): Promise<void> {
   const config = getRuntimeConfig();
 
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const status = await metaGraphRequest<{ status_code?: string; status?: string }>(
+    const status = await instagramGraphRequest<{ status_code?: string; status?: string }>(
       `/${containerId}?fields=status_code,status&access_token=${encodeURIComponent(config.instagramAccessToken)}`,
     );
 
@@ -1346,12 +1369,13 @@ async function waitForContainerReady(containerId: string): Promise<void> {
 
 async function publishInstagramContainer(creationId: string): Promise<{ mediaId: string; permalink?: string }> {
   const config = getRuntimeConfig();
+  const publishingActorId = getInstagramPublishingActorId();
   const publishBody = new URLSearchParams({
     creation_id: creationId,
     access_token: config.instagramAccessToken,
   });
 
-  const published = await metaGraphRequest<{ id: string }>(`/${config.instagramBusinessId}/media_publish`, {
+  const published = await instagramGraphRequest<{ id: string }>(`/${publishingActorId}/media_publish`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -1361,7 +1385,7 @@ async function publishInstagramContainer(creationId: string): Promise<{ mediaId:
 
   let permalink: string | undefined;
   try {
-    const media = await metaGraphRequest<{ permalink?: string }>(
+    const media = await instagramGraphRequest<{ permalink?: string }>(
       `/${published.id}?fields=permalink&access_token=${encodeURIComponent(config.instagramAccessToken)}`,
     );
     permalink = media.permalink;
@@ -1379,7 +1403,8 @@ async function publishPost(post: Post, author: string): Promise<Post> {
   await addLog("Instagram API", "info", `Iniciando publicação do post '${post.titulo}'.`, {
     postId: post.id,
     postType: post.tipo,
-    businessId: getRuntimeConfig().instagramBusinessId,
+    publishingActorId: getInstagramPublishingActorId(),
+    graphBaseUrl: getRuntimeConfig().instagramGraphBaseUrl,
   });
 
   if (!(await canUseRealMode())) {

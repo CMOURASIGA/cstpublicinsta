@@ -18,6 +18,7 @@ const defaultSettings: SettingsConfig = {
   googleDriveFolderId: '',
   googleConfigured: false,
   instagramBusinessId: '',
+  instagramGraphBaseUrl: 'https://graph.facebook.com',
   facebookPageId: '',
   instagramConfigured: false,
   geminiModel: 'gemini-3.5-flash',
@@ -167,7 +168,8 @@ export default function SettingsSync({ onSettingsSaved }: SettingsSyncProps) {
             <ReadonlyField label="Graph API Version" value={settings.graphApiVersion} />
             <ReadonlyField label="Supabase URL" value={settings.supabaseUrl} />
             <ReadonlyField label="Pasta raiz Google Drive" value={settings.googleDriveFolderId} />
-            <ReadonlyField label="Instagram Business ID" value={settings.instagramBusinessId} />
+            <ReadonlyField label="Instagram Actor ID" value={settings.instagramBusinessId} />
+            <ReadonlyField label="Instagram Graph Base URL" value={settings.instagramGraphBaseUrl || ''} />
             <ReadonlyField label="Facebook Page ID" value={settings.facebookPageId} />
             <ReadonlyField label="Gemini Model" value={settings.geminiModel} />
             <ReadonlyField label="Armazenamento de segredos" value={settings.secretsStoredInBackend ? 'Somente backend' : 'Indefinido'} />
