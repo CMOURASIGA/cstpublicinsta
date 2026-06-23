@@ -2749,15 +2749,6 @@ app.put("/api/users/:id", async (req, res) => {
       perfil: perfilPublicacao ? (perfilPublicacao === "ADMIN" ? "ADMIN" : "OPERADOR") : req.body.perfil,
     });
 
-    await createHistoryRecord({
-      post_id: updated.id,
-      post_titulo: "Usuário operacional",
-      usuario: actingUser.nome,
-      acao: "Edição de Usuário",
-      observacao: `Cadastro operacional de ${updated.nome} atualizado no painel.`,
-      criado_em: new Date().toISOString(),
-    });
-
     await addLog("Database", "info", `Usuário '${updated.email}' atualizado.`, {
       userId: updated.id,
       perfil_publicacao: updated.perfil_publicacao,

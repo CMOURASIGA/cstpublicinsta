@@ -2250,14 +2250,6 @@ app.put("/api/users/:id", async (req, res) => {
       perfil_publicacao: perfilPublicacao,
       perfil: perfilPublicacao ? perfilPublicacao === "ADMIN" ? "ADMIN" : "OPERADOR" : req.body.perfil
     });
-    await createHistoryRecord({
-      post_id: updated.id,
-      post_titulo: "Usu\xE1rio operacional",
-      usuario: actingUser.nome,
-      acao: "Edi\xE7\xE3o de Usu\xE1rio",
-      observacao: `Cadastro operacional de ${updated.nome} atualizado no painel.`,
-      criado_em: (/* @__PURE__ */ new Date()).toISOString()
-    });
     await addLog("Database", "info", `Usu\xE1rio '${updated.email}' atualizado.`, {
       userId: updated.id,
       perfil_publicacao: updated.perfil_publicacao,
