@@ -967,6 +967,37 @@ async function updateSupabaseAuthUser(
   }
 }
 
+async function findSupabaseAuthUserByEmail(email: string): Promise<{ id: string; email: string } | null> {
+  const config = getRuntimeConfig();
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) {
+    return null;
+  }
+
+  const response = await fetch(`${config.supabaseUrl}/auth/v1/admin/users?page=1&per_page=1000`, {
+    headers: {
+      apikey: config.supabaseServiceRoleKey,
+      Authorization: `Bearer ${config.supabaseServiceRoleKey}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao listar usuários do Supabase Auth: ${await response.text()}`);
+  }
+
+  const data = (await response.json()) as { users?: Array<{ id?: string; email?: string }> };
+  const match = (data.users || []).find((user) => String(user.email || "").toLowerCase() === normalizedEmail);
+  if (!match?.id || !match.email) {
+    return null;
+  }
+
+  return {
+    id: match.id,
+    email: match.email,
+  };
+}
+
 function getAuthorizationToken(headerValue: string | string[] | undefined): string {
   const rawValue = Array.isArray(headerValue) ? headerValue[0] : headerValue;
   const match = (rawValue || "").match(/^Bearer\s+(.+)$/i);
@@ -2627,7 +2658,29 @@ app.post("/api/users", async (req, res) => {
       });
     }
 
-    const authUserId = await createSupabaseAuthUser({ email, password, nome });
+    let authUserId = "";
+    let linkedExistingAuthUser = false;
+    try {
+      authUserId = await createSupabaseAuthUser({ email, password, nome });
+    } catch (error) {
+      const detail = maskError(error);
+      const looksLikeExistingEmail =
+        detail.includes("email_exists") ||
+        detail.includes("already been registered") ||
+        detail.includes("already_registered");
+
+      if (!looksLikeExistingEmail) {
+        throw error;
+      }
+
+      const existingAuthUser = await findSupabaseAuthUserByEmail(email);
+      if (!existingAuthUser) {
+        throw error;
+      }
+
+      authUserId = existingAuthUser.id;
+      linkedExistingAuthUser = true;
+    }
     const created = await createOperationalUserRecord({
       nome,
       email,
@@ -2641,9 +2694,10 @@ app.post("/api/users", async (req, res) => {
       authUserId,
       perfil_publicacao: created.perfil_publicacao,
       ativo: created.ativo,
+      linkedExistingAuthUser,
     });
 
-    res.status(201).json({ success: true, user: created });
+    res.status(201).json({ success: true, user: created, linkedExistingAuthUser });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao criar usuário.");
   }

@@ -763,6 +763,32 @@ async function updateSupabaseAuthUser(authUserId, payload) {
     throw new Error(`Falha ao atualizar usu\xE1rio no Supabase Auth: ${await response.text()}`);
   }
 }
+async function findSupabaseAuthUserByEmail(email) {
+  const config = getRuntimeConfig();
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) {
+    return null;
+  }
+  const response = await fetch(`${config.supabaseUrl}/auth/v1/admin/users?page=1&per_page=1000`, {
+    headers: {
+      apikey: config.supabaseServiceRoleKey,
+      Authorization: `Bearer ${config.supabaseServiceRoleKey}`,
+      "Content-Type": "application/json"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`Falha ao listar usu\xE1rios do Supabase Auth: ${await response.text()}`);
+  }
+  const data = await response.json();
+  const match = (data.users || []).find((user) => String(user.email || "").toLowerCase() === normalizedEmail);
+  if (!match?.id || !match.email) {
+    return null;
+  }
+  return {
+    id: match.id,
+    email: match.email
+  };
+}
 function getAuthorizationToken(headerValue) {
   const rawValue = Array.isArray(headerValue) ? headerValue[0] : headerValue;
   const match = (rawValue || "").match(/^Bearer\s+(.+)$/i);
@@ -2150,7 +2176,23 @@ app.post("/api/users", async (req, res) => {
         error: "A tabela usuarios ainda n\xE3o possui a coluna perfil_publicacao. Neste ambiente s\xF3 \xE9 poss\xEDvel usar Administrador ou Criador."
       });
     }
-    const authUserId = await createSupabaseAuthUser({ email, password, nome });
+    let authUserId = "";
+    let linkedExistingAuthUser = false;
+    try {
+      authUserId = await createSupabaseAuthUser({ email, password, nome });
+    } catch (error) {
+      const detail = maskError(error);
+      const looksLikeExistingEmail = detail.includes("email_exists") || detail.includes("already been registered") || detail.includes("already_registered");
+      if (!looksLikeExistingEmail) {
+        throw error;
+      }
+      const existingAuthUser = await findSupabaseAuthUserByEmail(email);
+      if (!existingAuthUser) {
+        throw error;
+      }
+      authUserId = existingAuthUser.id;
+      linkedExistingAuthUser = true;
+    }
     const created = await createOperationalUserRecord({
       nome,
       email,
@@ -2162,9 +2204,10 @@ app.post("/api/users", async (req, res) => {
       userId: created.id,
       authUserId,
       perfil_publicacao: created.perfil_publicacao,
-      ativo: created.ativo
+      ativo: created.ativo,
+      linkedExistingAuthUser
     });
-    res.status(201).json({ success: true, user: created });
+    res.status(201).json({ success: true, user: created, linkedExistingAuthUser });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao criar usu\xE1rio.");
   }
