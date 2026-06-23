@@ -58,24 +58,6 @@ var defaultUsers = [
     perfil_publicacao: "ADMIN",
     ativo: true,
     criado_em: (/* @__PURE__ */ new Date()).toISOString()
-  },
-  {
-    id: "user-creator-juliana",
-    nome: "Juliana Santos",
-    email: "juliana@agencyflow.com",
-    perfil: "USUARIO",
-    perfil_publicacao: "CRIADOR",
-    ativo: true,
-    criado_em: (/* @__PURE__ */ new Date()).toISOString()
-  },
-  {
-    id: "user-approver-operacoes",
-    nome: "Mariana Lima",
-    email: "mariana.aprovacao@agencyflow.com",
-    perfil: "USUARIO",
-    perfil_publicacao: "APROVADOR",
-    ativo: true,
-    criado_em: (/* @__PURE__ */ new Date()).toISOString()
   }
 ];
 var memoryStore = {
@@ -589,44 +571,6 @@ async function listUsers() {
   if (columns.includes("ativo")) selectColumns.push("ativo");
   if (roleColumnAvailable) selectColumns.push("perfil_publicacao");
   const orderColumn = columns.includes("criado_em") ? "criado_em.asc" : "email.asc";
-  const usersRaw = await supabaseRequest(
-    `usuarios?select=${selectColumns.join(",")}&order=${orderColumn}`
-  );
-  const users = usersRaw.map(mapSupabaseUserRecord);
-  const existingEmails = new Set(users.map((user) => user.email.toLowerCase()).filter(Boolean));
-  const missingDefaults = defaultUsers.filter((user) => !existingEmails.has(user.email.toLowerCase()));
-  if (missingDefaults.length > 0) {
-    const payload = defaultUsers.map((user) => {
-      const base = {
-        nome: user.nome,
-        email: user.email,
-        perfil: roleColumnAvailable ? user.perfil : normalizePerfilPublicacao(user) === "ADMIN" ? "ADMIN" : "OPERADOR"
-      };
-      if (roleColumnAvailable) {
-        base.perfil_publicacao = normalizePerfilPublicacao(user);
-      }
-      if (columns.includes("status")) {
-        base.status = user.ativo ? "ATIVO" : "INATIVO";
-      }
-      if (columns.includes("ativo")) {
-        base.ativo = user.ativo;
-      }
-      if (columns.includes("origem_dado")) {
-        base.origem_dado = "SISTEMA";
-      }
-      if (columns.includes("criado_via_sistema")) {
-        base.criado_via_sistema = true;
-      }
-      return base;
-    });
-    await supabaseRequest("usuarios?on_conflict=email", {
-      method: "POST",
-      headers: {
-        Prefer: "resolution=merge-duplicates,return=representation"
-      },
-      body: JSON.stringify(payload)
-    });
-  }
   const finalUsersRaw = await supabaseRequest(
     `usuarios?select=${selectColumns.join(",")}&order=${orderColumn}`
   );
@@ -729,6 +673,24 @@ async function createOperationalUserRecord(payload) {
   usuariosColumnsCache = null;
   return mapSupabaseUserRecord(created[0]);
 }
+async function deleteOperationalUserRecord(id) {
+  if (!await canUseSupabase()) {
+    const index = memoryStore.usuarios.findIndex((user) => user.id === id);
+    if (index === -1) {
+      return null;
+    }
+    const [deleted2] = memoryStore.usuarios.splice(index, 1);
+    return deleted2;
+  }
+  const deleted = await supabaseRequest(`usuarios?id=eq.${sanitizeId(id)}&select=*`, {
+    method: "DELETE",
+    headers: {
+      Prefer: "return=representation"
+    }
+  });
+  usuariosColumnsCache = null;
+  return deleted[0] ? mapSupabaseUserRecord(deleted[0]) : null;
+}
 async function createSupabaseAuthUser(payload) {
   const config = getRuntimeConfig();
   const response = await fetch(`${config.supabaseUrl}/auth/v1/admin/users`, {
@@ -757,6 +719,23 @@ async function createSupabaseAuthUser(payload) {
     throw new Error("Supabase Auth n\xE3o retornou o ID do usu\xE1rio criado.");
   }
   return authUserId;
+}
+async function deleteSupabaseAuthUser(authUserId) {
+  if (!authUserId) {
+    return;
+  }
+  const config = getRuntimeConfig();
+  const response = await fetch(`${config.supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(authUserId)}`, {
+    method: "DELETE",
+    headers: {
+      apikey: config.supabaseServiceRoleKey,
+      Authorization: `Bearer ${config.supabaseServiceRoleKey}`,
+      "Content-Type": "application/json"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`Falha ao excluir usu\xE1rio no Supabase Auth: ${await response.text()}`);
+  }
 }
 function getAuthorizationToken(headerValue) {
   const rawValue = Array.isArray(headerValue) ? headerValue[0] : headerValue;
@@ -2199,6 +2178,34 @@ app.put("/api/users/:id", async (req, res) => {
     res.json({ success: true, user: updated });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao atualizar usu\xE1rio.");
+  }
+});
+app.delete("/api/users/:id", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+    const users = await listUsers();
+    const target = users.find((user) => user.id === req.params.id);
+    if (!target) {
+      return res.status(404).json({ error: "Usu\xE1rio n\xE3o encontrado." });
+    }
+    if (target.email.toLowerCase() === actingUser.email.toLowerCase()) {
+      return res.status(400).json({ error: "N\xE3o \xE9 permitido excluir o pr\xF3prio usu\xE1rio administrador em uso." });
+    }
+    if (target.auth_user_id) {
+      await deleteSupabaseAuthUser(target.auth_user_id);
+    }
+    const deleted = await deleteOperationalUserRecord(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ error: "Usu\xE1rio n\xE3o encontrado." });
+    }
+    await addLog("Database", "warn", `Usu\xE1rio '${deleted.email}' exclu\xEDdo do painel.`, {
+      userId: deleted.id,
+      authUserId: deleted.auth_user_id
+    });
+    res.json({ success: true, user: deleted });
+  } catch (error) {
+    respondWithError(res, error, "Database", "Falha ao excluir usu\xE1rio.");
   }
 });
 app.post("/api/gemini/generate-caption", async (req, res) => {

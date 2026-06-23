@@ -108,24 +108,6 @@ const defaultUsers: Usuario[] = [
     ativo: true,
     criado_em: new Date().toISOString(),
   },
-  {
-    id: "user-creator-juliana",
-    nome: "Juliana Santos",
-    email: "juliana@agencyflow.com",
-    perfil: "USUARIO",
-    perfil_publicacao: "CRIADOR",
-    ativo: true,
-    criado_em: new Date().toISOString(),
-  },
-  {
-    id: "user-approver-operacoes",
-    nome: "Mariana Lima",
-    email: "mariana.aprovacao@agencyflow.com",
-    perfil: "USUARIO",
-    perfil_publicacao: "APROVADOR",
-    ativo: true,
-    criado_em: new Date().toISOString(),
-  },
 ];
 
 const memoryStore: MemoryStore = {
@@ -751,53 +733,6 @@ async function listUsers(): Promise<Usuario[]> {
   if (roleColumnAvailable) selectColumns.push("perfil_publicacao");
   const orderColumn = columns.includes("criado_em") ? "criado_em.asc" : "email.asc";
 
-  const usersRaw = await supabaseRequest<Record<string, unknown>[]>(
-    `usuarios?select=${selectColumns.join(",")}&order=${orderColumn}`,
-  );
-  const users = usersRaw.map(mapSupabaseUserRecord);
-  const existingEmails = new Set(users.map((user) => user.email.toLowerCase()).filter(Boolean));
-  const missingDefaults = defaultUsers.filter((user) => !existingEmails.has(user.email.toLowerCase()));
-
-  if (missingDefaults.length > 0) {
-    const payload = defaultUsers.map((user) => {
-      const base = {
-        nome: user.nome,
-        email: user.email,
-        perfil: roleColumnAvailable ? user.perfil : normalizePerfilPublicacao(user) === "ADMIN" ? "ADMIN" : "OPERADOR",
-      } as Record<string, unknown>;
-
-      if (roleColumnAvailable) {
-        base.perfil_publicacao = normalizePerfilPublicacao(user);
-      }
-
-      if (columns.includes("status")) {
-        base.status = user.ativo ? "ATIVO" : "INATIVO";
-      }
-
-      if (columns.includes("ativo")) {
-        base.ativo = user.ativo;
-      }
-
-      if (columns.includes("origem_dado")) {
-        base.origem_dado = "SISTEMA";
-      }
-
-      if (columns.includes("criado_via_sistema")) {
-        base.criado_via_sistema = true;
-      }
-
-      return base;
-    });
-
-    await supabaseRequest<Record<string, unknown>[]>("usuarios?on_conflict=email", {
-      method: "POST",
-      headers: {
-        Prefer: "resolution=merge-duplicates,return=representation",
-      },
-      body: JSON.stringify(payload),
-    });
-  }
-
   const finalUsersRaw = await supabaseRequest<Record<string, unknown>[]>(
     `usuarios?select=${selectColumns.join(",")}&order=${orderColumn}`,
   );
@@ -924,6 +859,28 @@ async function createOperationalUserRecord(payload: {
   return mapSupabaseUserRecord(created[0]);
 }
 
+async function deleteOperationalUserRecord(id: string): Promise<Usuario | null> {
+  if (!(await canUseSupabase())) {
+    const index = memoryStore.usuarios.findIndex((user) => user.id === id);
+    if (index === -1) {
+      return null;
+    }
+
+    const [deleted] = memoryStore.usuarios.splice(index, 1);
+    return deleted;
+  }
+
+  const deleted = await supabaseRequest<Record<string, unknown>[]>(`usuarios?id=eq.${sanitizeId(id)}&select=*`, {
+    method: "DELETE",
+    headers: {
+      Prefer: "return=representation",
+    },
+  });
+
+  usuariosColumnsCache = null;
+  return deleted[0] ? mapSupabaseUserRecord(deleted[0]) : null;
+}
+
 async function createSupabaseAuthUser(payload: { email: string; password: string; nome: string }): Promise<string> {
   const config = getRuntimeConfig();
   const response = await fetch(`${config.supabaseUrl}/auth/v1/admin/users`, {
@@ -955,6 +912,26 @@ async function createSupabaseAuthUser(payload: { email: string; password: string
   }
 
   return authUserId;
+}
+
+async function deleteSupabaseAuthUser(authUserId: string): Promise<void> {
+  if (!authUserId) {
+    return;
+  }
+
+  const config = getRuntimeConfig();
+  const response = await fetch(`${config.supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(authUserId)}`, {
+    method: "DELETE",
+    headers: {
+      apikey: config.supabaseServiceRoleKey,
+      Authorization: `Bearer ${config.supabaseServiceRoleKey}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao excluir usuário no Supabase Auth: ${await response.text()}`);
+  }
 }
 
 function getAuthorizationToken(headerValue: string | string[] | undefined): string {
@@ -2681,6 +2658,41 @@ app.put("/api/users/:id", async (req, res) => {
     res.json({ success: true, user: updated });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao atualizar usuário.");
+  }
+});
+
+app.delete("/api/users/:id", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+
+    const users = await listUsers();
+    const target = users.find((user) => user.id === req.params.id);
+    if (!target) {
+      return res.status(404).json({ error: "Usuário não encontrado." });
+    }
+
+    if (target.email.toLowerCase() === actingUser.email.toLowerCase()) {
+      return res.status(400).json({ error: "Não é permitido excluir o próprio usuário administrador em uso." });
+    }
+
+    if (target.auth_user_id) {
+      await deleteSupabaseAuthUser(target.auth_user_id);
+    }
+
+    const deleted = await deleteOperationalUserRecord(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ error: "Usuário não encontrado." });
+    }
+
+    await addLog("Database", "warn", `Usuário '${deleted.email}' excluído do painel.`, {
+      userId: deleted.id,
+      authUserId: deleted.auth_user_id,
+    });
+
+    res.json({ success: true, user: deleted });
+  } catch (error) {
+    respondWithError(res, error, "Database", "Falha ao excluir usuário.");
   }
 });
 
