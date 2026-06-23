@@ -86,6 +86,34 @@ export default function UsersManagement({ onUsersChanged }: UsersManagementProps
     }
   };
 
+  const resetPassword = async (user: EditableUser) => {
+    const password = window.prompt(`Informe a nova senha para ${user.nome}:`);
+    if (password === null) {
+      return;
+    }
+
+    if (password.trim().length < 6) {
+      alert('A nova senha deve ter ao menos 6 caracteres.');
+      return;
+    }
+
+    updateLocalUser(user.id, { saving: true });
+    try {
+      const res = await apiFetch(`/api/users/${user.id}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: password.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao redefinir a senha.');
+      updateLocalUser(user.id, { saving: false });
+      alert('Senha redefinida com sucesso.');
+    } catch (err) {
+      updateLocalUser(user.id, { saving: false });
+      alert(err instanceof Error ? err.message : 'Falha ao redefinir a senha.');
+    }
+  };
+
   const createUser = async () => {
     if (!newUserName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) {
       alert('Preencha nome, e-mail e senha provisória.');
@@ -173,7 +201,12 @@ export default function UsersManagement({ onUsersChanged }: UsersManagementProps
                   </div>
                 </div>
                 <div className="col-span-12 md:col-span-3">
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">{user.email}</div>
+                  <input
+                    type="email"
+                    value={user.email}
+                    onChange={(event) => updateLocalUser(user.id, { email: event.target.value })}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-brand-primary"
+                  />
                 </div>
                 <div className="col-span-6 md:col-span-2">
                   <div className="relative">
@@ -194,6 +227,14 @@ export default function UsersManagement({ onUsersChanged }: UsersManagementProps
                     <button type="button" disabled={user.saving} onClick={() => void saveUser(user)} className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-brand-secondary px-3 py-2 text-xs font-bold text-brand-darker transition-colors hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-60">
                       <Save className="h-4 w-4" />
                       {user.saving ? 'Salvando...' : 'Salvar'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={user.saving}
+                      onClick={() => void resetPassword(user)}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 transition-colors hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Senha
                     </button>
                     <button type="button" disabled={user.saving} onClick={() => void deleteUser(user)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60">
                       <Trash2 className="h-4 w-4" />

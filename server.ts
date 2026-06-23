@@ -934,6 +934,39 @@ async function deleteSupabaseAuthUser(authUserId: string): Promise<void> {
   }
 }
 
+async function updateSupabaseAuthUser(
+  authUserId: string,
+  payload: { email?: string; password?: string; nome?: string },
+): Promise<void> {
+  if (!authUserId) {
+    throw new Error("Usuário sem vínculo com Supabase Auth.");
+  }
+
+  const body: Record<string, unknown> = {};
+  if (payload.email) body.email = payload.email;
+  if (payload.password) body.password = payload.password;
+  if (payload.nome) {
+    body.user_metadata = {
+      nome: payload.nome,
+    };
+  }
+
+  const config = getRuntimeConfig();
+  const response = await fetch(`${config.supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(authUserId)}`, {
+    method: "PUT",
+    headers: {
+      apikey: config.supabaseServiceRoleKey,
+      Authorization: `Bearer ${config.supabaseServiceRoleKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao atualizar usuário no Supabase Auth: ${await response.text()}`);
+  }
+}
+
 function getAuthorizationToken(headerValue: string | string[] | undefined): string {
   const rawValue = Array.isArray(headerValue) ? headerValue[0] : headerValue;
   const match = (rawValue || "").match(/^Bearer\s+(.+)$/i);
@@ -2620,6 +2653,11 @@ app.put("/api/users/:id", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertIsAdmin(actingUser);
+    const users = await listUsers();
+    const existingUser = users.find((user) => user.id === req.params.id);
+    if (!existingUser) {
+      throw new HttpError(404, "Usuário não encontrado.");
+    }
 
     const roleColumnAvailable = await hasUsuariosRoleColumn();
     const perfilPublicacao = req.body.perfil_publicacao
@@ -2632,9 +2670,26 @@ app.put("/api/users/:id", async (req, res) => {
       );
     }
 
+    const nextEmail = trimEnv(req.body.email || existingUser.email).toLowerCase();
+    if (!nextEmail) {
+      throw new HttpError(400, "E-mail é obrigatório.");
+    }
+
+    const duplicatedEmail = users.find((user) => user.id !== req.params.id && user.email.toLowerCase() === nextEmail);
+    if (duplicatedEmail) {
+      throw new HttpError(409, "Já existe outro usuário com este e-mail.");
+    }
+
+    if (existingUser.auth_user_id && (nextEmail !== existingUser.email.toLowerCase() || req.body.nome !== undefined)) {
+      await updateSupabaseAuthUser(existingUser.auth_user_id, {
+        email: nextEmail,
+        nome: String(req.body.nome ?? existingUser.nome),
+      });
+    }
+
     const updated = await updateUserRecord(req.params.id, {
       nome: req.body.nome,
-      email: req.body.email,
+      email: nextEmail,
       ativo: req.body.ativo,
       perfil_publicacao: perfilPublicacao,
       perfil: perfilPublicacao ? (perfilPublicacao === "ADMIN" ? "ADMIN" : "OPERADOR") : req.body.perfil,
@@ -2693,6 +2748,43 @@ app.delete("/api/users/:id", async (req, res) => {
     res.json({ success: true, user: deleted });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao excluir usuário.");
+  }
+});
+
+app.post("/api/users/:id/reset-password", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+
+    const newPassword = String(req.body.password || "").trim();
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: "Nova senha deve ter ao menos 6 caracteres." });
+    }
+
+    const users = await listUsers();
+    const target = users.find((user) => user.id === req.params.id);
+    if (!target) {
+      return res.status(404).json({ error: "Usuário não encontrado." });
+    }
+
+    if (!target.auth_user_id) {
+      return res.status(400).json({ error: "Este usuário não possui vínculo com Supabase Auth para redefinição de senha." });
+    }
+
+    await updateSupabaseAuthUser(target.auth_user_id, {
+      email: target.email,
+      nome: target.nome,
+      password: newPassword,
+    });
+
+    await addLog("Database", "info", `Senha do usuário '${target.email}' redefinida pelo painel.`, {
+      userId: target.id,
+      authUserId: target.auth_user_id,
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    respondWithError(res, error, "Database", "Falha ao redefinir senha do usuário.");
   }
 });
 
