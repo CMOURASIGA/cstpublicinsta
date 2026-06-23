@@ -42,8 +42,8 @@ export default function LoginScreen({ onLoggedIn }: LoginScreenProps) {
       <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-[28px] border border-white/10 bg-white/6 p-8 shadow-2xl shadow-black/20 backdrop-blur">
           <div className="mb-8 flex items-center gap-4">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-400 text-slate-950 shadow-lg shadow-amber-500/20">
-              <ShieldCheck className="h-7 w-7" />
+            <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl bg-white p-1 shadow-lg shadow-black/20">
+              <img src="/app-logo.jpg" alt="Logo do sistema" className="h-full w-full rounded-xl object-contain" />
             </div>
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-200/80">InstaFlow</p>
@@ -52,15 +52,14 @@ export default function LoginScreen({ onLoggedIn }: LoginScreenProps) {
           </div>
 
           <p className="max-w-xl text-sm leading-relaxed text-slate-300">
-            Entre com e-mail e senha do Supabase Auth. Depois do login, o backend localiza o seu registro na tabela
-            `usuarios` e aplica o perfil operacional correspondente.
+            Entre com e-mail e senha liberado. Depois do login, faça a operação desejada.
           </p>
 
           <div className="mt-8 rounded-2xl border border-cyan-200/10 bg-slate-950/25 p-5 text-sm text-slate-300">
             <p className="font-semibold text-white">Regras de acesso</p>
             <p className="mt-2 leading-relaxed">
-              O usuário precisa existir no Supabase Auth e também na tabela `usuarios`. Se a conta autenticar mas não
-              estiver cadastrada como ativa na base operacional, o acesso será bloqueado.
+              O usuário precisa existir na base de dados. Se a conta autenticar mas não estiver cadastrada como ativa
+              na base operacional, o acesso será bloqueado. Entre em contato com o admin para uso.
             </p>
           </div>
         </div>
