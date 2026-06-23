@@ -81,9 +81,9 @@ export default function HistoryList() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+      <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
         <div>
-          <h2 className="text-xl font-bold font-sans text-slate-800">Histórico e Auditoria</h2>
+          <h2 className="text-lg sm:text-xl font-bold font-sans text-slate-800">Histórico e Auditoria</h2>
           <p className="text-xs text-slate-500 mt-1">
             Veja a linha do tempo de aprovações, edições, reversões e publicações automáticas executadas no sistema.
           </p>
@@ -152,7 +152,7 @@ export default function HistoryList() {
 
       {/* History table list */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+        <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-center">
           <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
             Logs Oficiais de Auditoria ({filteredHistory.length})
           </span>

@@ -101,16 +101,16 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
       {/* Intro section */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-4">
         <div>
-          <h2 className="text-xl font-bold font-sans text-slate-800 tracking-tight">Painel de Monitoramento Geral</h2>
+          <h2 className="text-lg sm:text-xl font-bold font-sans text-slate-800 tracking-tight">Painel de Monitoramento Geral</h2>
           <p className="text-xs text-slate-500 mt-0.5">Visão unificada das postagens do Instagram, arquivos no Drive e logs do integrador.</p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 w-full sm:w-auto">
           {onSimulateTick && (
             <button
               onClick={triggerTick}
               disabled={tickProcessing}
-              className="py-2 px-3 text-xs font-semibold bg-brand-light text-brand-secondary hover:bg-brand-primary/15 rounded-lg border border-brand-primary/20 flex items-center gap-1.5 transition-all shadow-sm shrink-0"
+              className="w-full sm:w-auto justify-center py-2 px-3 text-xs font-semibold bg-brand-light text-brand-secondary hover:bg-brand-primary/15 rounded-lg border border-brand-primary/20 flex items-center gap-1.5 transition-all shadow-sm shrink-0"
               title="Varre postagens agendadas de forma síncrona"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${tickProcessing ? 'animate-spin' : ''}`} />
@@ -128,7 +128,7 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 min-[440px]:grid-cols-2 lg:grid-cols-4 gap-4">
         
         {/* Pending */}
         <div 
@@ -204,7 +204,7 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Analytics status bar design */}
-        <div className="lg:col-span-4 bg-white p-5 border border-slate-200 rounded-xl shadow-sm flex flex-col justify-between">
+        <div className="lg:col-span-4 bg-white p-4 sm:p-5 border border-slate-200 rounded-xl shadow-sm flex flex-col justify-between">
           <div>
             <h3 className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
               <Layers className="w-4 h-4 text-brand-secondary" /> Distribuição de Conteúdo
@@ -212,7 +212,7 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
             <p className="text-[11px] text-slate-400 mt-0.5">Indicador acumulado por estado dos posts.</p>
           </div>
 
-          <div className="h-[200px] w-full my-4">
+          <div className="h-[180px] sm:h-[200px] w-full my-4">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData} margin={{ left: -24, right: 10, top: 10 }}>
                 <XAxis dataKey="name" stroke="#94a3b8" fontSize={10} tickLine={false} />
@@ -246,16 +246,16 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
         </div>
 
         {/* Simulated Live Instagram Feed Widget */}
-        <div className="lg:col-span-8 bg-slate-900 border border-slate-800 text-white p-5 rounded-xl flex flex-col justify-between shadow-lg">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <div className="flex items-center gap-2">
+        <div className="lg:col-span-8 bg-slate-900 border border-slate-800 text-white p-4 sm:p-5 rounded-xl flex flex-col justify-between shadow-lg">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2 min-w-0">
               <Tablet className="w-4 h-4 text-pink-400" />
-              <div>
+              <div className="min-w-0">
                 <h3 className="font-bold text-sm text-slate-100">Live Feed Simulador (Aparência Canal)</h3>
                 <p className="text-[10px] text-slate-400 mt-0.5">Posts com status PUBLICADA aparecem ao público neste grid.</p>
               </div>
             </div>
-            <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+            <span className="w-fit text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
               Online Feed Sandbox
             </span>
           </div>
@@ -266,7 +266,7 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
               <p className="text-[10px] text-slate-600">Aprove posts na aba "Moderação" para ver a grade se alimentar ao vivo.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5 my-4 overflow-y-auto max-h-[220px] p-0.5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 my-4 overflow-y-auto max-h-[260px] p-0.5">
               {publishedFeed.map((post) => (
                 <div 
                   key={post.id} 
@@ -320,7 +320,7 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
 
       {/* Grid: Recent activities from history */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-        <div className="px-5 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <div className="px-4 sm:px-5 py-4 bg-slate-50 border-b border-slate-200 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <h3 className="font-bold text-xs text-slate-600 uppercase tracking-wide flex items-center gap-2">
             <Activity className="w-4 h-4 text-brand-secondary" /> Atividades Recentes de Auditoria (Últimas 5)
           </h3>
@@ -351,7 +351,7 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
                   <p className="text-slate-500 leading-normal">{log.observacao}</p>
                 </div>
 
-                <div className="flex sm:flex-col items-center sm:items-end justify-between shrink-0 text-[10px] text-slate-400 border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-100">
+                <div className="flex sm:flex-col items-center sm:items-end justify-between shrink-0 text-[10px] text-slate-400 border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-100 gap-3 sm:gap-0">
                   <span className="font-medium text-slate-700 flex items-center gap-0.5">👤 {log.usuario}</span>
                   <span className="sm:mt-0.5">{new Date(log.criado_em).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>

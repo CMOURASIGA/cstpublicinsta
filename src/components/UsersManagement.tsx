@@ -158,9 +158,9 @@ export default function UsersManagement({ onUsersChanged }: UsersManagementProps
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+      <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
         <div>
-          <h2 className="text-xl font-bold font-sans text-slate-800">Usuários e Perfis</h2>
+          <h2 className="text-lg sm:text-xl font-bold font-sans text-slate-800">Usuários e Perfis</h2>
           <p className="mt-1 text-xs text-slate-500">CRUD completo do cadastro operacional: criar, listar, editar e excluir usuários do sistema.</p>
         </div>
         <Users className="h-5 w-5 text-brand-secondary" />
@@ -168,7 +168,7 @@ export default function UsersManagement({ onUsersChanged }: UsersManagementProps
 
       {error && <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-700">{error}</div>}
 
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 shadow-sm">
         <div className="mb-4">
           <h3 className="text-sm font-bold text-slate-800">Novo usuário</h3>
           <p className="mt-1 text-xs text-slate-500">Este fluxo cria a conta no Supabase Auth e também o cadastro operacional do sistema.</p>
@@ -181,7 +181,7 @@ export default function UsersManagement({ onUsersChanged }: UsersManagementProps
             {roleOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </div>
-        <div className="mt-4 flex justify-end">
+        <div className="mt-4 flex justify-stretch sm:justify-end">
           <button type="button" disabled={creating} onClick={() => void createUser()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-secondary px-4 py-2 text-xs font-bold text-brand-darker transition-colors hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-60">
             <Users className="h-4 w-4" />
             {creating ? 'Criando...' : 'Criar usuário'}
@@ -190,7 +190,7 @@ export default function UsersManagement({ onUsersChanged }: UsersManagementProps
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-        <div className="grid grid-cols-12 gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+        <div className="hidden md:grid grid-cols-12 gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">
           <div className="col-span-12 md:col-span-3">Usuário</div>
           <div className="col-span-12 md:col-span-3">E-mail</div>
           <div className="col-span-6 md:col-span-2">Perfil</div>
@@ -202,14 +202,16 @@ export default function UsersManagement({ onUsersChanged }: UsersManagementProps
         ) : (
           <div className="divide-y divide-slate-100">
             {users.map((user) => (
-              <div key={user.id} className="grid grid-cols-12 gap-3 px-4 py-4 items-center">
-                <div className="col-span-12 md:col-span-3">
+              <div key={user.id} className="grid grid-cols-1 md:grid-cols-12 gap-3 px-4 py-4 items-center">
+                <div className="md:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400">Usuário</div>
+                <div className="md:col-span-3">
                   <div className="relative">
                     <UserCog className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <input type="text" value={user.nome} onChange={(event) => updateLocalUser(user.id, { nome: event.target.value })} className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-xs text-slate-700 outline-none focus:border-brand-primary" />
                   </div>
                 </div>
-                <div className="col-span-12 md:col-span-3">
+                <div className="md:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400">E-mail</div>
+                <div className="md:col-span-3">
                   <input
                     type="email"
                     value={user.email}
@@ -217,7 +219,8 @@ export default function UsersManagement({ onUsersChanged }: UsersManagementProps
                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-brand-primary"
                   />
                 </div>
-                <div className="col-span-6 md:col-span-2">
+                <div className="md:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400">Perfil</div>
+                <div className="md:col-span-2">
                   <div className="relative">
                     <Shield className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <select value={user.perfil_publicacao || 'CRIADOR'} onChange={(event) => updateLocalUser(user.id, { perfil_publicacao: event.target.value as PerfilPublicacao })} className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-xs text-slate-700 outline-none focus:border-brand-primary">
@@ -225,14 +228,16 @@ export default function UsersManagement({ onUsersChanged }: UsersManagementProps
                     </select>
                   </div>
                 </div>
-                <div className="col-span-6 md:col-span-2">
+                <div className="md:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400">Status</div>
+                <div className="md:col-span-2">
                   <select value={user.ativo ? 'ATIVO' : 'INATIVO'} onChange={(event) => updateLocalUser(user.id, { ativo: event.target.value === 'ATIVO' })} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-brand-primary">
                     <option value="ATIVO">Ativo</option>
                     <option value="INATIVO">Inativo</option>
                   </select>
                 </div>
-                <div className="col-span-12 md:col-span-2">
-                  <div className="flex gap-2">
+                <div className="md:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400">Ações</div>
+                <div className="md:col-span-2">
+                  <div className="flex flex-col sm:flex-row gap-2">
                     <button type="button" disabled={user.saving} onClick={() => void saveUser(user)} className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-brand-secondary px-3 py-2 text-xs font-bold text-brand-darker transition-colors hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-60">
                       <Save className="h-4 w-4" />
                       {user.saving ? 'Salvando...' : 'Salvar'}

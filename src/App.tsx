@@ -242,6 +242,21 @@ export default function App() {
     }
   };
 
+  const pageTitle =
+    currentScreen === 'dashboard'
+      ? 'Dashboard'
+      : currentScreen === 'criar'
+        ? 'Criar Postagem'
+        : currentScreen === 'aprovacao'
+          ? 'Moderação'
+          : currentScreen === 'historico'
+            ? 'Histórico'
+            : currentScreen === 'config'
+              ? 'Parâmetros'
+              : currentScreen === 'usuarios'
+                ? 'Usuários'
+                : 'Logs';
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans text-slate-800">
       <aside className="hidden md:flex w-64 bg-brand-dark text-slate-300 flex-col shrink-0 border-r border-brand-darker/60 h-screen sticky top-0 z-30">
@@ -379,63 +394,69 @@ export default function App() {
       </aside>
 
       <div className="flex-1 flex flex-col min-h-screen">
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 sm:px-8 shrink-0 sticky top-0 z-20 shadow-sm md:shadow-none">
-          <div className="flex items-center gap-3">
-            <div className="flex md:hidden items-center gap-2.5 cursor-pointer" onClick={() => setCurrentScreen('dashboard')}>
-              <div className="w-8 h-8 rounded-lg overflow-hidden bg-brand-primary flex items-center justify-center shadow-sm shrink-0">
-                <img src="https://i.imgur.com/c5XQ7TW.jpeg" className="w-full h-full object-cover" alt="Logo" referrerPolicy="no-referrer" />
-              </div>
-              <span className="font-bold text-sm text-slate-850 tracking-tight">InstaFlow</span>
-            </div>
-
-            <h1 className="hidden md:block text-xl font-bold text-slate-800 font-sans">
-              {currentScreen === 'dashboard' && 'Dashboard'}
-              {currentScreen === 'criar' && 'Criar Postagem'}
-              {currentScreen === 'aprovacao' && 'Moderação e Fluxos'}
-              {currentScreen === 'historico' && 'Histórico de Atividade'}
-              {currentScreen === 'config' && 'Mapeamento de Integrações'}
-              {currentScreen === 'usuarios' && 'Usuários e Perfis'}
-              {currentScreen === 'logs' && 'Logs de Auditoria'}
-            </h1>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 bg-brand-light text-brand-secondary px-3 py-1 rounded-full text-[10px] sm:text-xs font-bold border border-brand-primary/20 shadow-sm">
-              <span className="w-2 h-2 rounded-full bg-brand-secondary animate-pulse"></span>
-              <span>{currentUser.nome}</span>
-            </div>
-
-            <div className="md:hidden relative">
-              <button
-                onClick={() => setProfileDropdown((prev) => !prev)}
-                className="flex items-center gap-1 bg-slate-100 border border-slate-200 py-1.5 px-2.5 rounded-lg text-xs font-bold text-slate-700 outline-none"
-              >
-                <span>{currentUser.nome.split(' ')[0]}</span>
-                <ChevronDown className="w-3 h-3 text-slate-500" />
-              </button>
-              {profileDropdown && (
-                <div className="absolute right-0 mt-1 w-56 bg-white border border-slate-200 rounded-xl shadow-lg py-1.5 z-50 text-xs">
-                  <div className="px-3 py-2 border-b border-slate-100">
-                    <p className="font-semibold text-slate-800">{currentUser.nome}</p>
-                    <p className="text-[10px] text-slate-500">{currentUser.email}</p>
-                  </div>
-                  <button onClick={() => void handleLogout()} className="w-full text-left px-3 py-2 hover:bg-slate-50 font-semibold text-rose-600">
-                    Sair e trocar usuário
-                  </button>
+        <header className="sticky top-0 z-20 shrink-0 border-b border-slate-200 bg-white shadow-sm md:shadow-none">
+          <div className="flex min-h-16 items-center justify-between gap-3 px-4 sm:px-6 md:px-8">
+            <div className="min-w-0 flex items-center gap-3">
+              <div className="flex min-w-0 md:hidden items-center gap-2.5 cursor-pointer" onClick={() => setCurrentScreen('dashboard')}>
+                <div className="w-8 h-8 rounded-lg overflow-hidden bg-brand-primary flex items-center justify-center shadow-sm shrink-0">
+                  <img src="https://i.imgur.com/c5XQ7TW.jpeg" className="w-full h-full object-cover" alt="Logo" referrerPolicy="no-referrer" />
                 </div>
-              )}
+                <div className="min-w-0">
+                  <span className="block truncate font-bold text-sm text-slate-850 tracking-tight">InstaFlow</span>
+                  <span className="block truncate text-[10px] text-slate-400">{pageTitle}</span>
+                </div>
+              </div>
+
+              <h1 className="hidden md:block text-xl font-bold text-slate-800 font-sans">
+                {currentScreen === 'dashboard' && 'Dashboard'}
+                {currentScreen === 'criar' && 'Criar Postagem'}
+                {currentScreen === 'aprovacao' && 'Moderação e Fluxos'}
+                {currentScreen === 'historico' && 'Histórico de Atividade'}
+                {currentScreen === 'config' && 'Mapeamento de Integrações'}
+                {currentScreen === 'usuarios' && 'Usuários e Perfis'}
+                {currentScreen === 'logs' && 'Logs de Auditoria'}
+              </h1>
+            </div>
+
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="hidden sm:flex items-center gap-2 bg-brand-light text-brand-secondary px-3 py-1 rounded-full text-[10px] sm:text-xs font-bold border border-brand-primary/20 shadow-sm max-w-[220px]">
+                <span className="w-2 h-2 rounded-full bg-brand-secondary animate-pulse shrink-0"></span>
+                <span className="truncate">{currentUser.nome}</span>
+              </div>
+
+              <div className="md:hidden relative">
+                <button
+                  onClick={() => setProfileDropdown((prev) => !prev)}
+                  className="flex items-center gap-1 bg-slate-100 border border-slate-200 py-1.5 px-2.5 rounded-lg text-xs font-bold text-slate-700 outline-none"
+                >
+                  <span>{currentUser.nome.split(' ')[0]}</span>
+                  <ChevronDown className="w-3 h-3 text-slate-500" />
+                </button>
+                {profileDropdown && (
+                  <div className="absolute right-0 mt-1 w-56 bg-white border border-slate-200 rounded-xl shadow-lg py-1.5 z-50 text-xs">
+                    <div className="px-3 py-2 border-b border-slate-100">
+                      <p className="font-semibold text-slate-800">{currentUser.nome}</p>
+                      <p className="text-[10px] text-slate-500">{currentUser.email}</p>
+                    </div>
+                    <button onClick={() => void handleLogout()} className="w-full text-left px-3 py-2 hover:bg-slate-50 font-semibold text-rose-600">
+                      Sair e trocar usuário
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </header>
 
-        <main className="flex-1 p-4 sm:p-8 pb-24 md:pb-8 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto px-3 py-4 sm:p-6 md:p-8 pb-28 md:pb-8">
           {renderActiveScreen()}
         </main>
 
-        <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-white border-t border-slate-200/80 px-2 flex items-center justify-around z-40 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] pb-safe">
+        <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200/80 z-40 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] pb-safe">
+          <div className={`grid min-h-16 ${canManageUsers ? 'grid-cols-6' : 'grid-cols-5'}`}>
           <button
             onClick={() => setCurrentScreen('dashboard')}
-            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+            className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
               currentScreen === 'dashboard' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
             style={{ minHeight: '48px' }}
@@ -447,7 +468,7 @@ export default function App() {
           {canCreate && (
             <button
               onClick={() => setCurrentScreen('criar')}
-              className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+              className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
                 currentScreen === 'criar' ? 'text-brand-secondary' : 'text-slate-450'
               }`}
               style={{ minHeight: '48px' }}
@@ -460,7 +481,7 @@ export default function App() {
           {canApprove && (
             <button
               onClick={() => setCurrentScreen('aprovacao')}
-              className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors relative ${
+              className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors relative ${
                 currentScreen === 'aprovacao' ? 'text-brand-secondary' : 'text-slate-450'
               }`}
               style={{ minHeight: '48px' }}
@@ -477,7 +498,7 @@ export default function App() {
 
           <button
             onClick={() => setCurrentScreen('historico')}
-            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+            className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
               currentScreen === 'historico' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
             style={{ minHeight: '48px' }}
@@ -488,7 +509,7 @@ export default function App() {
 
           <button
             onClick={() => setCurrentScreen('config')}
-            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+            className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
               currentScreen === 'config' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
             style={{ minHeight: '48px' }}
@@ -500,7 +521,7 @@ export default function App() {
           {canManageUsers && (
             <button
               onClick={() => setCurrentScreen('usuarios')}
-              className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+              className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
                 currentScreen === 'usuarios' ? 'text-brand-secondary' : 'text-slate-450'
               }`}
               style={{ minHeight: '48px' }}
@@ -512,7 +533,7 @@ export default function App() {
 
           <button
             onClick={() => setCurrentScreen('logs')}
-            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+            className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
               currentScreen === 'logs' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
             style={{ minHeight: '48px' }}
@@ -520,6 +541,7 @@ export default function App() {
             <Terminal className="w-5 h-5 mb-0.5" />
             <span>Logs</span>
           </button>
+          </div>
         </div>
 
         <footer className="bg-white border-t border-slate-200/80 text-center py-4 text-[10px] text-slate-400 mt-auto shrink-0">

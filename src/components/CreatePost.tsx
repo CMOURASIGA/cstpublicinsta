@@ -299,9 +299,9 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+      <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
         <div>
-          <h2 className="text-xl font-bold font-sans text-slate-800">
+          <h2 className="text-lg sm:text-xl font-bold font-sans text-slate-800">
             {editingPost ? 'Editar Rascunho' : 'Criar Nova Publicação'}
           </h2>
           <p className="text-xs text-slate-500 mt-1">
@@ -318,8 +318,8 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
         </div>
       )}
 
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="mb-4 flex items-center justify-between">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 shadow-sm">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-sm font-bold text-slate-800">Rascunhos e Devolvidos</h3>
             <p className="mt-1 text-xs text-slate-500">
@@ -387,7 +387,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        <div className="lg:col-span-7 bg-white border border-slate-200 p-6 rounded-xl shadow-sm space-y-4">
+        <div className="lg:col-span-7 bg-white border border-slate-200 p-4 sm:p-6 rounded-xl shadow-sm space-y-4">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div className="md:col-span-2">
               <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600">
@@ -533,7 +533,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
             />
           </div>
 
-          <div className="flex flex-wrap gap-3 border-t border-slate-100 pt-4">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 border-t border-slate-100 pt-4">
             <button
               type="button"
               disabled={saving}
@@ -579,7 +579,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
           </div>
         </div>
 
-        <div className="lg:col-span-5 bg-gradient-to-br from-slate-50 to-brand-light/30 border border-slate-200 p-6 rounded-xl shadow-sm self-start space-y-4">
+        <div className="lg:col-span-5 bg-gradient-to-br from-slate-50 to-brand-light/30 border border-slate-200 p-4 sm:p-6 rounded-xl shadow-sm self-start space-y-4">
           <div className="flex items-center gap-1.5">
             <div className="rounded-lg bg-brand-secondary p-1 px-1.5 text-brand-darker">
               <Sparkles className="h-4 w-4" />

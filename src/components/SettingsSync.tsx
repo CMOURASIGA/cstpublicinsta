@@ -83,9 +83,9 @@ export default function SettingsSync({ onSettingsSaved }: SettingsSyncProps) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+      <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
         <div>
-          <h2 className="text-xl font-bold font-sans text-slate-800">Parâmetros e Integrações</h2>
+          <h2 className="text-lg sm:text-xl font-bold font-sans text-slate-800">Parâmetros e Integrações</h2>
           <p className="mt-1 text-xs text-slate-500">
             As credenciais agora são lidas apenas no backend via variáveis de ambiente. Esta tela reflete o estado efetivo da aplicação.
           </p>
@@ -135,7 +135,7 @@ export default function SettingsSync({ onSettingsSaved }: SettingsSyncProps) {
           </div>
         </div>
 
-        <div className="space-y-5 rounded-xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-2">
+        <div className="space-y-5 rounded-xl border border-slate-200 bg-white p-4 sm:p-6 shadow-sm lg:col-span-2">
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge active={settings.supabaseConfigured && settings.supabaseSchemaReady} label={settings.supabaseConfigured && settings.supabaseSchemaReady ? 'Supabase ativo' : 'Supabase pendente'} />
             <StatusBadge active={settings.googleConfigured} label={settings.googleConfigured ? 'Google Drive ativo' : 'Google Drive pendente'} />
