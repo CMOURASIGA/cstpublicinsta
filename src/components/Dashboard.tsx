@@ -24,7 +24,8 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
   const [stats, setStats] = useState({
     pending: 0,
     published: 0,
-    rejected: 0,
+    rejectedCurrent: 0,
+    rejectedEvents: 0,
     scheduled: 0,
     total: 0
   });
@@ -41,7 +42,8 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
         setStats({
           pending: p.filter((item: Post) => item.status === 'PENDENTE').length,
           published: p.filter((item: Post) => item.status === 'PUBLICADA').length,
-          rejected: p.filter((item: Post) => item.status === 'REJEITADA').length,
+          rejectedCurrent: p.filter((item: Post) => item.status === 'REJEITADA').length,
+          rejectedEvents: 0,
           scheduled: p.filter((item: Post) => item.status === 'AGENDADA').length,
           total: p.length
         });
@@ -50,7 +52,15 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
       const resHist = await apiFetch('/api/history');
       const dataHist = await resHist.json();
       if (dataHist.history) {
-        setHistory(dataHist.history.slice(0, 5)); // Last 5 activities
+        const historyItems = dataHist.history as HistoricoPost[];
+        setHistory(historyItems.slice(0, 5)); // Last 5 activities
+        setStats((current) => ({
+          ...current,
+          rejectedEvents: historyItems.filter((item) => {
+            const action = (item.acao || '').toLowerCase();
+            return action.includes('rejeit') || action.includes('recus');
+          }).length,
+        }));
       }
     } catch (err) {
       console.error(err);
@@ -89,7 +99,7 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
     { name: 'Pendentes', valor: stats.pending, fill: '#f59e0b' },
     { name: 'Agendadas', valor: stats.scheduled, fill: '#0096DB' },
     { name: 'Publicadas', valor: stats.published, fill: '#00A1E0' },
-    { name: 'Rejeitadas', valor: stats.rejected, fill: '#f43f5e' },
+    { name: 'Devolvidas', valor: stats.rejectedCurrent, fill: '#f43f5e' },
   ];
 
   // Simulated Published posts filter
@@ -193,9 +203,10 @@ export default function Dashboard({ onNavigate, onSimulateTick }: DashboardProps
             </div>
           </div>
           <div className="mt-2.5 flex items-baseline gap-1.5">
-            <span className="text-2xl font-bold text-slate-850 font-sans">{stats.rejected}</span>
-            <span className="text-[10px] text-rose-500 font-semibold font-sans">Recusadas</span>
+            <span className="text-2xl font-bold text-slate-850 font-sans">{stats.rejectedEvents}</span>
+            <span className="text-[10px] text-rose-500 font-semibold font-sans">Recusas registradas</span>
           </div>
+          <p className="mt-2 text-[10px] text-slate-400">Em ajuste agora: {stats.rejectedCurrent}</p>
         </div>
 
       </div>
