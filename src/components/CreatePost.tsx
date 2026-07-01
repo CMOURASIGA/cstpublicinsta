@@ -26,7 +26,7 @@ interface CreatePostProps {
   currentUser: Usuario;
 }
 
-function getCurrentRole(user: Usuario): 'CRIADOR' | 'APROVADOR' | 'ADMIN' {
+function getCurrentRole(user: Usuario): 'CRIADOR' | 'APROVADOR' | 'ADMIN' | 'SUPER_ADMIN' | 'ADMIN_CLIENTE' | 'VISUALIZADOR' {
   return user.perfil_publicacao || (user.perfil === 'ADMINISTRADOR' ? 'ADMIN' : 'CRIADOR');
 }
 

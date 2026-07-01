@@ -1,9 +1,23 @@
-import { createHmac, createSign, randomUUID } from "crypto";
+﻿import { createHmac, createSign, randomUUID } from "crypto";
 import express from "express";
 import dotenv from "dotenv";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { HistoricoPost, LogMessage, PerfilPublicacao, Post, PostStatus, SettingsConfig, Usuario } from "./src/types";
+import {
+  Cliente,
+  ClienteConfiguracao,
+  ClienteIntegracao,
+  ClienteUsuario,
+  HistoricoPost,
+  LogMessage,
+  ParametroAuditoria,
+  PerfilPublicacao,
+  Post,
+  PostStatus,
+  SettingsConfig,
+  SistemaConfiguracao,
+  Usuario,
+} from "./src/types";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 dotenv.config();
@@ -32,6 +46,7 @@ interface RuntimeConfig {
   googleClientEmail: string;
   googlePrivateKey: string;
   googleDriveFolderId: string;
+  defaultClientSlug: string;
   metaAppId: string;
   metaAppSecret: string;
   metaRedirectUri: string;
@@ -41,7 +56,6 @@ interface RuntimeConfig {
   instagramGraphBaseUrl: string;
   facebookPageId: string;
   metaVerifyToken: string;
-  n8nApprovalWebhookUrl: string;
   mediaUrlSigningSecret: string;
   supabaseConfigured: boolean;
   googleConfigured: boolean;
@@ -51,6 +65,12 @@ interface RuntimeConfig {
 }
 
 interface MemoryStore {
+  clientes: Cliente[];
+  sistemaConfiguracoes: SistemaConfiguracao[];
+  clienteConfiguracoes: ClienteConfiguracao[];
+  clienteIntegracoes: ClienteIntegracao[];
+  clienteUsuarios: ClienteUsuario[];
+  parametroAuditoria: ParametroAuditoria[];
   posts: Post[];
   usuarios: Usuario[];
   historicos: HistoricoPost[];
@@ -99,6 +119,28 @@ interface DriveFolderMap {
   publicadosId: string;
 }
 
+interface ClienteOperationalContext {
+  clienteId: string | null;
+  driveRootId: string;
+  driveImagesId: string;
+  driveVideosId: string;
+  drivePublishedId: string;
+  googleRefreshToken: string;
+  graphApiVersion: string;
+  instagramAccessToken: string;
+  instagramUserId: string;
+  instagramBusinessId: string;
+  facebookPageId: string;
+  instagramGraphBaseUrl: string;
+  googleConfigured: boolean;
+  instagramConfigured: boolean;
+  aiProvider: string;
+  aiModel: string;
+  aiApiKey: string;
+  aiConfigured: boolean;
+  modoOperacao: RuntimeMode;
+}
+
 const defaultUsers: Usuario[] = [
   {
     id: "user-admin-cmoura",
@@ -111,26 +153,173 @@ const defaultUsers: Usuario[] = [
   },
 ];
 
+const defaultClientes: Cliente[] = [
+  {
+    id: "cliente-inicial-id",
+    nome: "Cliente Inicial",
+    slug: "cliente-inicial",
+    status: "ATIVO",
+    logo_url: null,
+    cor_primaria: "#001836",
+    cor_secundaria: "#0060ac",
+    criado_em: new Date().toISOString(),
+    atualizado_em: new Date().toISOString(),
+  },
+];
+
+const CLIENTE_CONFIG_DEFAULTS: Array<
+  Omit<ClienteConfiguracao, "id" | "cliente_id" | "criado_em" | "atualizado_em">
+> = [
+  {
+    chave: "MODO_OPERACAO",
+    valor: "SIMULADOR",
+    valor_encrypted: null,
+    tipo: "STRING",
+    categoria: "GERAL",
+    descricao: "Modo operacional do cliente.",
+    sensivel: false,
+    editavel_por_cliente: false,
+    usar_padrao_sistema: false,
+  },
+  {
+    chave: "PROVEDOR_IA",
+    valor: trimEnv(process.env.AI_DEFAULT_PROVIDER) || "GEMINI",
+    valor_encrypted: null,
+    tipo: "STRING",
+    categoria: "IA",
+    descricao: "Provedor padrao do cliente.",
+    sensivel: false,
+    editavel_por_cliente: true,
+    usar_padrao_sistema: true,
+  },
+  {
+    chave: "MODELO_IA",
+    valor: trimEnv(process.env.AI_DEFAULT_MODEL) || "gemini-2.5-flash",
+    valor_encrypted: null,
+    tipo: "STRING",
+    categoria: "IA",
+    descricao: "Modelo padrao do cliente.",
+    sensivel: false,
+    editavel_por_cliente: true,
+    usar_padrao_sistema: true,
+  },
+  {
+    chave: "PROMPT_BASE",
+    valor: "",
+    valor_encrypted: null,
+    tipo: "JSON",
+    categoria: "IA",
+    descricao: "Prompt base do cliente.",
+    sensivel: false,
+    editavel_por_cliente: true,
+    usar_padrao_sistema: true,
+  },
+  {
+    chave: "TEMPERATURA",
+    valor: "0.4",
+    valor_encrypted: null,
+    tipo: "NUMBER",
+    categoria: "IA",
+    descricao: "Temperatura do modelo.",
+    sensivel: false,
+    editavel_por_cliente: true,
+    usar_padrao_sistema: true,
+  },
+  {
+    chave: "IA_API_KEY",
+    valor: null,
+    valor_encrypted: null,
+    tipo: "SECRET",
+    categoria: "IA",
+    descricao: "Chave do provedor selecionado.",
+    sensivel: true,
+    editavel_por_cliente: true,
+    usar_padrao_sistema: true,
+  },
+  {
+    chave: "EXIGE_APROVACAO",
+    valor: "true",
+    valor_encrypted: null,
+    tipo: "BOOLEAN",
+    categoria: "APROVACAO",
+    descricao: "Exige aprovacao antes da publicacao.",
+    sensivel: false,
+    editavel_por_cliente: true,
+    usar_padrao_sistema: true,
+  },
+  {
+    chave: "NUMERO_MINIMO_APROVADORES",
+    valor: "1",
+    valor_encrypted: null,
+    tipo: "NUMBER",
+    categoria: "APROVACAO",
+    descricao: "Quantidade minima de aprovadores.",
+    sensivel: false,
+    editavel_por_cliente: true,
+    usar_padrao_sistema: true,
+  },
+  {
+    chave: "PERMITE_PUBLICACAO_DIRETA",
+    valor: "true",
+    valor_encrypted: null,
+    tipo: "BOOLEAN",
+    categoria: "APROVACAO",
+    descricao: "Aprovadores podem publicar diretamente.",
+    sensivel: false,
+    editavel_por_cliente: true,
+    usar_padrao_sistema: true,
+  },
+  {
+    chave: "NOTIFICAR_APROVADORES",
+    valor: "true",
+    valor_encrypted: null,
+    tipo: "BOOLEAN",
+    categoria: "APROVACAO",
+    descricao: "Notifica aprovadores.",
+    sensivel: false,
+    editavel_por_cliente: true,
+    usar_padrao_sistema: true,
+  },
+  {
+    chave: "NOTIFICAR_CRIADOR",
+    valor: "true",
+    valor_encrypted: null,
+    tipo: "BOOLEAN",
+    categoria: "APROVACAO",
+    descricao: "Notifica criador.",
+    sensivel: false,
+    editavel_por_cliente: true,
+    usar_padrao_sistema: true,
+  },
+];
+
 const memoryStore: MemoryStore = {
+  clientes: [...defaultClientes],
+  sistemaConfiguracoes: [],
+  clienteConfiguracoes: [],
+  clienteIntegracoes: [],
+  clienteUsuarios: [],
+  parametroAuditoria: [],
   posts: [],
   usuarios: [...defaultUsers],
   historicos: [],
   logs: [],
 };
 
-const REQUIRED_SUPABASE_TABLES = ["posts", "usuarios", "historico_posts", "logs"] as const;
+const REQUIRED_SUPABASE_TABLES = ["clientes", "cliente_usuarios", "cliente_integracoes", "posts", "usuarios", "historico_posts", "logs"] as const;
 const SCHEMA_CACHE_TTL_MS = 60_000;
 let supabaseSchemaCache: SupabaseSchemaState | null = null;
 let usuariosRoleColumnAvailableCache: boolean | null = null;
 let usuariosColumnsCache: string[] | null = null;
 let aiClient: GoogleGenAI | null = null;
+let aiClientKey = "";
 
 function getGeminiClient(): GoogleGenAI {
-  if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error("GEMINI_API_KEY não configurada.");
-    }
+  const apiKey = trimEnv(process.env.GEMINI_API_KEY);
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY nÃ£o configurada.");
+  }
+  if (!aiClient || aiClientKey !== apiKey) {
     aiClient = new GoogleGenAI({
       apiKey,
       httpOptions: {
@@ -139,6 +328,27 @@ function getGeminiClient(): GoogleGenAI {
         },
       },
     });
+    aiClientKey = apiKey;
+  }
+
+  return aiClient;
+}
+
+function getGeminiClientWithKey(apiKey: string): GoogleGenAI {
+  const normalizedApiKey = trimEnv(apiKey);
+  if (!normalizedApiKey) {
+    throw new Error("Chave da IA nÃ£o configurada para o cliente.");
+  }
+  if (!aiClient || aiClientKey !== normalizedApiKey) {
+    aiClient = new GoogleGenAI({
+      apiKey: normalizedApiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "instaflow-manager",
+        },
+      },
+    });
+    aiClientKey = normalizedApiKey;
   }
 
   return aiClient;
@@ -150,6 +360,75 @@ function trimEnv(value?: string): string {
 
 function normalizePrivateKey(value?: string): string {
   return trimEnv(value).replace(/\\n/g, "\n");
+}
+
+function hasGoogleAuthCredentials(config: RuntimeConfig): boolean {
+  return Boolean(
+    (config.googleClientEmail && config.googlePrivateKey) ||
+      (config.googleClientId && config.googleClientSecret && config.googleRefreshToken),
+  );
+}
+
+function getFallbackAiApiKey(provider: string): string {
+  switch (provider.toUpperCase()) {
+    case "OPENAI":
+      return trimEnv(process.env.OPENAI_API_KEY);
+    case "ANTHROPIC":
+      return trimEnv(process.env.ANTHROPIC_API_KEY);
+    case "DEEPSEEK":
+      return trimEnv(process.env.DEEPSEEK_API_KEY);
+    case "GROK":
+      return trimEnv(process.env.GROK_API_KEY);
+    case "AZURE_OPENAI":
+      return trimEnv(process.env.AZURE_OPENAI_API_KEY);
+    case "GEMINI":
+    default:
+      return trimEnv(process.env.GEMINI_API_KEY);
+  }
+}
+
+function createSignedState(payload: Record<string, unknown>): string {
+  const raw = Buffer.from(JSON.stringify(payload), "utf-8").toString("base64url");
+  const signature = createHmac("sha256", getRuntimeConfig().mediaUrlSigningSecret).update(raw).digest("hex");
+  return `${raw}.${signature}`;
+}
+
+function parseSignedState<T>(state: string): T | null {
+  const [raw, signature] = String(state || "").split(".");
+  if (!raw || !signature) return null;
+  const expected = createHmac("sha256", getRuntimeConfig().mediaUrlSigningSecret).update(raw).digest("hex");
+  if (signature !== expected) return null;
+  try {
+    return JSON.parse(Buffer.from(raw, "base64url").toString("utf-8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+function renderSimpleHtmlPage(title: string, body: string, tone: "ok" | "warn" = "warn"): string {
+  return `<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 32px; }
+      main { max-width: 820px; margin: 0 auto; background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 24px; }
+      h1 { margin-top: 0; font-size: 24px; }
+      .ok { color: #166534; }
+      .warn { color: #92400e; }
+      .box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin: 16px 0; }
+      code, pre { font-family: Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 class="${tone}">${escapeHtml(title)}</h1>
+      ${body}
+    </main>
+  </body>
+</html>`;
 }
 
 function normalizeAppUrl(rawUrl: string): string {
@@ -178,7 +457,8 @@ function getRuntimeConfig(): RuntimeConfig {
   const supabaseUrl = trimEnv(process.env.SUPABASE_URL);
   const supabaseAnonKey = trimEnv(process.env.SUPABASE_ANON_KEY);
   const supabaseServiceRoleKey = trimEnv(process.env.SUPABASE_SERVICE_ROLE_KEY);
-  const googleDriveFolderId = trimEnv(process.env.GOOGLE_DRIVE_FOLDER_ID);
+  const googleDriveFolderId = trimEnv(process.env.GOOGLE_DRIVE_FOLDER_ID || process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID);
+  const defaultClientSlug = trimEnv(process.env.DEFAULT_CLIENT_SLUG) || "cliente-inicial";
   const googleClientId = trimEnv(process.env.GOOGLE_CLIENT_ID);
   const googleClientSecret = trimEnv(process.env.GOOGLE_CLIENT_SECRET || process.env.GOOGEL_SECRET_KEY);
   const googleRefreshToken = trimEnv(process.env.GOOGLE_REFRESH_TOKEN);
@@ -195,38 +475,31 @@ function getRuntimeConfig(): RuntimeConfig {
   const metaAppSecret = trimEnv(process.env.META_APP_SECRET);
   const metaRedirectUri = trimEnv(process.env.META_REDIRECT_URI);
   const metaVerifyToken = trimEnv(process.env.META_VERIFY_TOKEN);
-  const n8nApprovalWebhookUrl = trimEnv(process.env.N8N_APPROVAL_WEBHOOK_URL);
   const appUrl = normalizeAppUrl(rawAppUrl);
   const appUrlIsPublic = Boolean(rawAppUrl) && !isLocalhostUrl(appUrl);
   const geminiModel = trimEnv(process.env.GEMINI_MODEL) || "gemini-3.5-flash";
   const mediaUrlSigningSecret = trimEnv(process.env.MEDIA_URL_SIGNING_SECRET) || "local-media-secret";
 
   const supabaseConfigured = Boolean(supabaseUrl && supabaseServiceRoleKey);
-  const googleConfigured = Boolean(
-    googleDriveFolderId &&
-      ((googleClientEmail && googlePrivateKey) || (googleClientId && googleClientSecret && googleRefreshToken)),
+  const googleAuthConfigured = Boolean(
+    (googleClientEmail && googlePrivateKey) || (googleClientId && googleClientSecret && googleRefreshToken),
   );
+  const googleConfigured = Boolean(googleDriveFolderId && googleAuthConfigured);
   const instagramConfigured = Boolean(instagramAccessToken && (instagramUserId || instagramBusinessId));
   const geminiConfigured = Boolean(trimEnv(process.env.GEMINI_API_KEY));
 
   const missingEnv: string[] = [];
   if (!supabaseConfigured) missingEnv.push("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseAnonKey) missingEnv.push("SUPABASE_ANON_KEY");
-  if (!googleDriveFolderId) missingEnv.push("GOOGLE_DRIVE_FOLDER_ID");
-  if (!(googleClientEmail && googlePrivateKey) && !(googleClientId && googleClientSecret && googleRefreshToken)) {
+  if (!googleAuthConfigured) {
     missingEnv.push(
       "GOOGLE_CLIENT_EMAIL/GOOGLE_PRIVATE_KEY ou GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/GOOGLE_REFRESH_TOKEN",
     );
   }
-  if (!instagramAccessToken) missingEnv.push("INSTAGRAM_ACCESS_TOKEN");
-  if (!instagramUserId && !instagramBusinessId) missingEnv.push("INSTAGRAM_USER_ID ou INSTAGRAM_BUSINESS_ID");
   if (!rawAppUrl) missingEnv.push("APP_URL");
-  if (rawAppUrl && !appUrlIsPublic) missingEnv.push("APP_URL deve apontar para uma URL pública acessível pela Meta");
+  if (rawAppUrl && !appUrlIsPublic) missingEnv.push("APP_URL deve apontar para uma URL pÃºblica acessÃ­vel pela Meta");
 
-  const operationalMode: RuntimeMode =
-    mode === "REAL" && supabaseConfigured && googleConfigured && instagramConfigured && appUrlIsPublic
-      ? "REAL"
-      : "SIMULATOR";
+  const operationalMode: RuntimeMode = mode === "REAL" && supabaseConfigured && appUrlIsPublic ? "REAL" : "SIMULATOR";
 
   return {
     appUrl,
@@ -245,6 +518,7 @@ function getRuntimeConfig(): RuntimeConfig {
     googleClientEmail,
     googlePrivateKey,
     googleDriveFolderId,
+    defaultClientSlug,
     metaAppId,
     metaAppSecret,
     metaRedirectUri,
@@ -254,7 +528,6 @@ function getRuntimeConfig(): RuntimeConfig {
     instagramGraphBaseUrl,
     facebookPageId,
     metaVerifyToken,
-    n8nApprovalWebhookUrl,
     mediaUrlSigningSecret,
     supabaseConfigured,
     googleConfigured,
@@ -282,30 +555,51 @@ async function inspectSupabaseSchema(forceRefresh = false): Promise<SupabaseSche
 
   const missingTables: string[] = [];
 
-  for (const table of REQUIRED_SUPABASE_TABLES) {
-    const response = await fetch(`${config.supabaseUrl}/rest/v1/${table}?select=id&limit=1`, {
-      headers: {
-        apikey: config.supabaseServiceRoleKey,
-        Authorization: `Bearer ${config.supabaseServiceRoleKey}`,
-      },
-    });
+  try {
+    for (const table of REQUIRED_SUPABASE_TABLES) {
+      const response = await fetch(`${config.supabaseUrl}/rest/v1/${table}?select=id&limit=1`, {
+        headers: {
+          apikey: config.supabaseServiceRoleKey,
+          Authorization: `Bearer ${config.supabaseServiceRoleKey}`,
+        },
+      });
 
-    if (response.ok) {
-      continue;
+      if (response.ok) {
+        continue;
+      }
+
+      const payload = await response.text();
+      if (payload.includes("PGRST205")) {
+        missingTables.push(table);
+        continue;
+      }
+
+      if (payload.includes("\"code\":\"42501\"")) {
+        missingTables.push(`${table} (permissão service_role ausente)`);
+        continue;
+      }
+
+      if (payload.toLowerCase().includes("invalid api key")) {
+        console.warn("[InstaFlow] Chave Supabase inválida. O servidor vai operar em modo local.");
+        supabaseSchemaCache = {
+          ready: false,
+          missingTables: [...REQUIRED_SUPABASE_TABLES],
+          checkedAt: now,
+        };
+        return supabaseSchemaCache;
+      }
+
+      throw new Error(`Falha ao validar schema do Supabase para '${table}': ${payload}`);
     }
-
-    const payload = await response.text();
-    if (payload.includes("PGRST205")) {
-      missingTables.push(table);
-      continue;
-    }
-
-    if (payload.includes("\"code\":\"42501\"")) {
-      missingTables.push(`${table} (permissão service_role ausente)`);
-      continue;
-    }
-
-    throw new Error(`Falha ao validar schema do Supabase para '${table}': ${payload}`);
+  } catch (error) {
+    const detail = maskError(error);
+    console.warn(`[InstaFlow] Supabase indisponível, usando modo local: ${detail}`);
+    supabaseSchemaCache = {
+      ready: false,
+      missingTables: [...REQUIRED_SUPABASE_TABLES],
+      checkedAt: now,
+    };
+    return supabaseSchemaCache;
   }
 
   supabaseSchemaCache = {
@@ -323,17 +617,28 @@ async function canUseSupabase(): Promise<boolean> {
     return false;
   }
 
-  const schema = await inspectSupabaseSchema();
-  return schema.ready;
+  try {
+    const schema = await inspectSupabaseSchema();
+    return schema.ready;
+  } catch (error) {
+    console.warn(`[InstaFlow] canUseSupabase caiu para false: ${maskError(error)}`);
+    return false;
+  }
 }
 
-async function canUseRealMode(): Promise<boolean> {
+async function canUseRealMode(clienteId?: string | null): Promise<boolean> {
   const config = getRuntimeConfig();
   if (config.operationalMode !== "REAL") {
     return false;
   }
-
-  return canUseSupabase();
+  if (!(await canUseSupabase())) {
+    return false;
+  }
+  if (!clienteId) {
+    return true;
+  }
+  const context = await getClienteOperationalContext(clienteId);
+  return context.modoOperacao === "REAL";
 }
 
 async function hasUsuariosRoleColumn(): Promise<boolean> {
@@ -391,11 +696,12 @@ function mapSupabaseUserRecord(record: Record<string, unknown>): Usuario {
   };
 }
 
-async function getSettingsView(): Promise<SettingsConfig> {
+async function getSettingsView(clienteId?: string): Promise<SettingsConfig> {
   const config = getRuntimeConfig();
   const schemaState = await inspectSupabaseSchema();
+  const context = await getClienteOperationalContext(clienteId || null);
   const operationalMode: RuntimeMode =
-    config.mode === "REAL" && config.googleConfigured && config.instagramConfigured && schemaState.ready ? "REAL" : "SIMULATOR";
+    config.mode === "REAL" && schemaState.ready && context.modoOperacao === "REAL" ? "REAL" : "SIMULATOR";
 
   return {
     mode: config.mode,
@@ -405,15 +711,15 @@ async function getSettingsView(): Promise<SettingsConfig> {
     supabaseConfigured: config.supabaseConfigured,
     supabaseSchemaReady: schemaState.ready,
     missingSupabaseTables: schemaState.missingTables,
-    googleDriveFolderId: config.googleDriveFolderId,
-    googleConfigured: config.googleConfigured,
-    instagramBusinessId: config.instagramUserId || config.instagramBusinessId,
-    instagramGraphBaseUrl: config.instagramGraphBaseUrl,
-    facebookPageId: config.facebookPageId,
-    instagramConfigured: config.instagramConfigured,
-    geminiModel: config.geminiModel,
-    geminiConfigured: config.geminiConfigured,
-    graphApiVersion: config.graphApiVersion,
+    googleDriveFolderId: context.driveRootId,
+    googleConfigured: context.googleConfigured,
+    instagramBusinessId: context.instagramUserId || context.instagramBusinessId,
+    instagramGraphBaseUrl: context.instagramGraphBaseUrl,
+    facebookPageId: context.facebookPageId,
+    instagramConfigured: context.instagramConfigured,
+    geminiModel: context.aiModel,
+    geminiConfigured: context.aiConfigured,
+    graphApiVersion: context.graphApiVersion,
     secretsStoredInBackend: true,
     readOnly: true,
     missingEnv: config.missingEnv,
@@ -427,6 +733,579 @@ function getPublicRuntimeConfig() {
     appUrl: config.appUrl,
     supabaseUrl: config.supabaseUrl,
     supabaseAnonKey: config.supabaseAnonKey,
+    platformName: "InstaFlow",
+    logos: {
+      squareText: "https://i.imgur.com/JHF8X7U.png",
+      squareMark: "https://i.imgur.com/wr0z5Xv.png",
+      wideText: "https://i.imgur.com/gxXnYsA.png",
+    },
+  };
+}
+
+function normalizeStatusValue(value: unknown): string {
+  return String(value || "").trim().toUpperCase();
+}
+
+async function listClientes(): Promise<Cliente[]> {
+  if (!(await canUseSupabase())) {
+    return [...memoryStore.clientes].sort((a, b) => b.criado_em.localeCompare(a.criado_em));
+  }
+
+  try {
+    return await supabaseRequest<Cliente[]>("clientes?select=*&order=criado_em.desc");
+  } catch {
+    return [...memoryStore.clientes].sort((a, b) => b.criado_em.localeCompare(a.criado_em));
+  }
+}
+
+async function getClienteById(clienteId: string): Promise<Cliente | null> {
+  if (!clienteId) return null;
+  if (!(await canUseSupabase())) {
+    return memoryStore.clientes.find((cliente) => cliente.id === clienteId || cliente.slug === clienteId) || null;
+  }
+
+  try {
+    const records = await supabaseRequest<Cliente[]>(`clientes?id=eq.${sanitizeId(clienteId)}&select=*`);
+    return records[0] || null;
+  } catch {
+    return memoryStore.clientes.find((cliente) => cliente.id === clienteId || cliente.slug === clienteId) || null;
+  }
+}
+
+async function getDefaultCliente(): Promise<Cliente> {
+  const config = getRuntimeConfig();
+  const bySlug = (await listClientes()).find((cliente) => cliente.slug === config.defaultClientSlug);
+  if (bySlug) return bySlug;
+  const first = (await listClientes())[0];
+  if (first) return first;
+  return memoryStore.clientes[0];
+}
+
+async function resolveClienteIdFromRequest(req: express.Request): Promise<string> {
+  const requested = String(req.headers["x-client-id"] || req.query.cliente_id || "").trim();
+  if (requested) {
+    const client = await getClienteById(requested);
+    if (client) {
+      return client.id;
+    }
+  }
+
+  const fallback = await getDefaultCliente();
+  return fallback.id;
+}
+
+async function getClienteIntegracao(clienteId: string): Promise<ClienteIntegracao | null> {
+  if (!clienteId) return null;
+  if (!(await canUseSupabase())) {
+    return memoryStore.clienteIntegracoes.find((item) => item.cliente_id === clienteId) || {
+      id: `local-${clienteId}`,
+      cliente_id: clienteId,
+      modo_operacao: "SIMULADOR",
+      criado_em: new Date().toISOString(),
+      atualizado_em: new Date().toISOString(),
+    };
+  }
+
+  try {
+    const records = await supabaseRequest<ClienteIntegracao[]>(
+      `cliente_integracoes?cliente_id=eq.${sanitizeId(clienteId)}&select=*`,
+    );
+    return records[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+function maskSecretValue(value?: string | null): string {
+  if (!value) return "";
+  if (value.length <= 8) return "****";
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function stringifyConfigValue(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+async function listSistemaConfiguracoes(): Promise<SistemaConfiguracao[]> {
+  const config = getRuntimeConfig();
+  const runtimeItems: SistemaConfiguracao[] = [
+    {
+      id: "runtime-app-url",
+      chave: "APP_URL",
+      valor: config.appUrl,
+      tipo: "STRING",
+      categoria: "GERAL",
+      descricao: "URL publica da aplicacao.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-supabase-url",
+      chave: "SUPABASE_URL",
+      valor: config.supabaseUrl,
+      tipo: "STRING",
+      categoria: "BANCO",
+      descricao: "URL do projeto Supabase.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-supabase-anon",
+      chave: "SUPABASE_ANON_KEY",
+      valor_encrypted: config.supabaseAnonKey,
+      tipo: "SECRET",
+      categoria: "BANCO",
+      descricao: "Chave publica do Supabase.",
+      sensivel: true,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-default-client",
+      chave: "DEFAULT_CLIENT_SLUG",
+      valor: config.defaultClientSlug,
+      tipo: "STRING",
+      categoria: "CLIENTES",
+      descricao: "Slug padrao carregado apos autenticacao.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-graph-api-version",
+      chave: "GRAPH_API_VERSION",
+      valor: config.graphApiVersion,
+      tipo: "STRING",
+      categoria: "META",
+      descricao: "Versao global da Graph API.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-instagram-graph-base-url",
+      chave: "INSTAGRAM_GRAPH_BASE_URL",
+      valor: config.instagramGraphBaseUrl,
+      tipo: "STRING",
+      categoria: "META",
+      descricao: "Base global da Graph API.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-google-client-id",
+      chave: "GOOGLE_CLIENT_ID",
+      valor: config.googleClientId,
+      tipo: "STRING",
+      categoria: "GOOGLE",
+      descricao: "Client ID global do Google OAuth.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-google-redirect-uri",
+      chave: "GOOGLE_REDIRECT_URI",
+      valor: config.googleRedirectUri,
+      tipo: "STRING",
+      categoria: "GOOGLE",
+      descricao: "Redirect URI global do Google OAuth.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-google-client-email",
+      chave: "GOOGLE_CLIENT_EMAIL",
+      valor: config.googleClientEmail,
+      tipo: "STRING",
+      categoria: "GOOGLE",
+      descricao: "Conta de servico global do Google Drive.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-meta-app-id",
+      chave: "META_APP_ID",
+      valor: config.metaAppId,
+      tipo: "STRING",
+      categoria: "META",
+      descricao: "App ID global da Meta.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-meta-redirect-uri",
+      chave: "META_REDIRECT_URI",
+      valor: config.metaRedirectUri,
+      tipo: "STRING",
+      categoria: "META",
+      descricao: "Redirect URI global da Meta.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-meta-verify-token",
+      chave: "META_VERIFY_TOKEN",
+      valor_encrypted: config.metaVerifyToken,
+      tipo: "SECRET",
+      categoria: "META",
+      descricao: "Token de validacao global do webhook da Meta.",
+      sensivel: true,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-ai-default-provider",
+      chave: "AI_DEFAULT_PROVIDER",
+      valor: trimEnv(process.env.AI_DEFAULT_PROVIDER) || "GEMINI",
+      tipo: "STRING",
+      categoria: "IA",
+      descricao: "Provedor padrao do sistema.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-ai-default-model",
+      chave: "AI_DEFAULT_MODEL",
+      valor: trimEnv(process.env.AI_DEFAULT_MODEL) || config.geminiModel,
+      tipo: "STRING",
+      categoria: "IA",
+      descricao: "Modelo padrao do sistema.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-ai-provider-options",
+      chave: "AI_PROVIDER_OPTIONS",
+      valor: trimEnv(process.env.AI_PROVIDER_OPTIONS),
+      tipo: "STRING",
+      categoria: "IA",
+      descricao: "Lista de provedores habilitados no sistema.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+    {
+      id: "runtime-client-storage",
+      chave: "CLIENT_INTEGRATIONS_STORAGE",
+      valor: trimEnv(process.env.CLIENT_INTEGRATIONS_STORAGE) || "SUPABASE",
+      tipo: "STRING",
+      categoria: "SEGURANCA",
+      descricao: "Origem padrao das credenciais de cliente.",
+      sensivel: false,
+      editavel: false,
+      criado_em: new Date(0).toISOString(),
+      atualizado_em: new Date().toISOString(),
+    },
+  ];
+
+  const stored = !(await canUseSupabase())
+    ? [...memoryStore.sistemaConfiguracoes]
+    : await supabaseRequest<SistemaConfiguracao[]>("sistema_configuracoes?select=*&order=categoria.asc,chave.asc").catch(
+        () => [...memoryStore.sistemaConfiguracoes],
+      );
+
+  const merged = new Map<string, SistemaConfiguracao>(stored.map((item) => [item.chave, item]));
+  for (const item of runtimeItems) {
+    const existing = merged.get(item.chave);
+    merged.set(item.chave, {
+      ...existing,
+      ...item,
+      id: existing?.id || item.id,
+      criado_em: existing?.criado_em || item.criado_em,
+      atualizado_em: item.atualizado_em,
+    });
+  }
+
+  return Array.from(merged.values()).sort((left, right) =>
+    `${left.categoria}:${left.chave}`.localeCompare(`${right.categoria}:${right.chave}`),
+  );
+}
+
+async function listClienteConfiguracoes(clienteId: string): Promise<ClienteConfiguracao[]> {
+  if (!(await canUseSupabase())) {
+    return memoryStore.clienteConfiguracoes.filter((item) => item.cliente_id === clienteId);
+  }
+
+  try {
+    return await supabaseRequest<ClienteConfiguracao[]>(
+      `cliente_configuracoes?cliente_id=eq.${sanitizeId(clienteId)}&select=*&order=categoria.asc,chave.asc`,
+    );
+  } catch {
+    return memoryStore.clienteConfiguracoes.filter((item) => item.cliente_id === clienteId);
+  }
+}
+
+async function listParametroAuditoria(clienteId?: string): Promise<ParametroAuditoria[]> {
+  if (!(await canUseSupabase())) {
+    return clienteId
+      ? memoryStore.parametroAuditoria.filter((item) => item.cliente_id === clienteId)
+      : [...memoryStore.parametroAuditoria];
+  }
+
+  try {
+    const query = clienteId
+      ? `parametro_auditoria?cliente_id=eq.${sanitizeId(clienteId)}&select=*&order=criado_em.desc`
+      : "parametro_auditoria?select=*&order=criado_em.desc";
+    return await supabaseRequest<ParametroAuditoria[]>(query);
+  } catch {
+    return clienteId
+      ? memoryStore.parametroAuditoria.filter((item) => item.cliente_id === clienteId)
+      : [...memoryStore.parametroAuditoria];
+  }
+}
+
+async function createParametroAuditoria(payload: Omit<ParametroAuditoria, "id" | "criado_em">): Promise<void> {
+  const record: ParametroAuditoria = {
+    id: randomUUID(),
+    criado_em: new Date().toISOString(),
+    ...payload,
+  };
+
+  if (!(await canUseSupabase())) {
+    memoryStore.parametroAuditoria.unshift(record);
+    return;
+  }
+
+  try {
+    await supabaseRequest<ParametroAuditoria[]>("parametro_auditoria", {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(record),
+    });
+  } catch {
+    memoryStore.parametroAuditoria.unshift(record);
+  }
+}
+
+async function upsertSistemaConfiguracao(item: Partial<SistemaConfiguracao> & { chave: string }): Promise<SistemaConfiguracao> {
+  const now = new Date().toISOString();
+  const existing = (await listSistemaConfiguracoes()).find((config) => config.chave === item.chave);
+  const payload: SistemaConfiguracao = {
+    id: existing?.id || randomUUID(),
+    chave: item.chave,
+    valor: item.valor ?? existing?.valor ?? null,
+    valor_encrypted: item.valor_encrypted ?? existing?.valor_encrypted ?? null,
+    tipo: item.tipo || existing?.tipo || "STRING",
+    categoria: item.categoria || existing?.categoria || "GERAL",
+    descricao: item.descricao ?? existing?.descricao ?? null,
+    sensivel: item.sensivel ?? existing?.sensivel ?? false,
+    editavel: item.editavel ?? existing?.editavel ?? true,
+    criado_em: existing?.criado_em || now,
+    atualizado_em: now,
+  };
+
+  if (!(await canUseSupabase())) {
+    const index = memoryStore.sistemaConfiguracoes.findIndex((config) => config.chave === item.chave);
+    if (index >= 0) {
+      memoryStore.sistemaConfiguracoes[index] = payload;
+    } else {
+      memoryStore.sistemaConfiguracoes.unshift(payload);
+    }
+    return payload;
+  }
+
+  const method = existing ? "PATCH" : "POST";
+  const endpoint = existing ? `sistema_configuracoes?chave=eq.${sanitizeId(item.chave)}` : "sistema_configuracoes";
+  const result = await supabaseRequest<SistemaConfiguracao[]>(endpoint, {
+    method,
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify(payload),
+  });
+  return result[0] || payload;
+}
+
+async function upsertClienteConfiguracao(
+  clienteId: string,
+  item: Partial<ClienteConfiguracao> & { chave: string },
+): Promise<ClienteConfiguracao> {
+  const now = new Date().toISOString();
+  const existing = (await listClienteConfiguracoes(clienteId)).find((config) => config.chave === item.chave);
+  const payload: ClienteConfiguracao = {
+    id: existing?.id || randomUUID(),
+    cliente_id: clienteId,
+    chave: item.chave,
+    valor: item.valor ?? existing?.valor ?? null,
+    valor_encrypted: item.valor_encrypted ?? existing?.valor_encrypted ?? null,
+    tipo: item.tipo || existing?.tipo || "STRING",
+    categoria: item.categoria || existing?.categoria || "GERAL",
+    descricao: item.descricao ?? existing?.descricao ?? null,
+    sensivel: item.sensivel ?? existing?.sensivel ?? false,
+    editavel_por_cliente: item.editavel_por_cliente ?? existing?.editavel_por_cliente ?? false,
+    usar_padrao_sistema: item.usar_padrao_sistema ?? existing?.usar_padrao_sistema ?? false,
+    criado_em: existing?.criado_em || now,
+    atualizado_em: now,
+  };
+
+  if (!(await canUseSupabase())) {
+    const index = memoryStore.clienteConfiguracoes.findIndex(
+      (config) => config.cliente_id === clienteId && config.chave === item.chave,
+    );
+    if (index >= 0) {
+      memoryStore.clienteConfiguracoes[index] = payload;
+    } else {
+      memoryStore.clienteConfiguracoes.unshift(payload);
+    }
+    return payload;
+  }
+
+  const method = existing ? "PATCH" : "POST";
+  const endpoint = existing
+    ? `cliente_configuracoes?cliente_id=eq.${sanitizeId(clienteId)}&chave=eq.${sanitizeId(item.chave)}`
+    : "cliente_configuracoes";
+  const result = await supabaseRequest<ClienteConfiguracao[]>(endpoint, {
+    method,
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify(payload),
+  });
+  return result[0] || payload;
+}
+
+async function ensureClienteSetup(clienteId: string): Promise<void> {
+  if (!clienteId) return;
+
+  const integracaoAtual = await getClienteIntegracao(clienteId);
+  if (!integracaoAtual) {
+    const now = new Date().toISOString();
+    const payload: ClienteIntegracao = {
+      id: randomUUID(),
+      cliente_id: clienteId,
+      google_drive_folder_id: null,
+      google_drive_imagens_folder_id: null,
+      google_drive_videos_folder_id: null,
+      google_drive_publicados_folder_id: null,
+      instagram_access_token: null,
+      instagram_user_id: null,
+      instagram_business_id: null,
+      facebook_page_id: null,
+      graph_api_version: getRuntimeConfig().graphApiVersion,
+      modo_operacao: "SIMULADOR",
+      criado_em: now,
+      atualizado_em: now,
+    };
+
+    if (!(await canUseSupabase())) {
+      memoryStore.clienteIntegracoes.unshift(payload);
+    } else {
+      await supabaseRequest<ClienteIntegracao[]>("cliente_integracoes", {
+        method: "POST",
+        headers: { Prefer: "return=representation,resolution=merge-duplicates" },
+        body: JSON.stringify(payload),
+      }).catch(() => undefined);
+    }
+  }
+
+  for (const item of CLIENTE_CONFIG_DEFAULTS) {
+    await upsertClienteConfiguracao(clienteId, item);
+  }
+}
+
+async function resolveConfigValue(clienteId: string | null, chave: string): Promise<string> {
+  if (clienteId) {
+    const clienteConfigs = await listClienteConfiguracoes(clienteId);
+    const clienteConfig = clienteConfigs.find((config) => config.chave === chave);
+    if (clienteConfig && !clienteConfig.usar_padrao_sistema) {
+      return clienteConfig.valor_encrypted || clienteConfig.valor || "";
+    }
+  }
+
+  const sistemaConfigs = await listSistemaConfiguracoes();
+  const sistemaConfig = sistemaConfigs.find((config) => config.chave === chave);
+  return sistemaConfig?.valor_encrypted || sistemaConfig?.valor || "";
+}
+
+async function getClienteOperationalContext(clienteId?: string | null): Promise<ClienteOperationalContext> {
+  const runtime = getRuntimeConfig();
+  const integrations = clienteId ? await getClienteIntegracao(clienteId) : null;
+  const aiProvider =
+    (await resolveConfigValue(clienteId || null, "PROVEDOR_IA")) ||
+    trimEnv(process.env.AI_DEFAULT_PROVIDER) ||
+    "GEMINI";
+  const aiModel =
+    (await resolveConfigValue(clienteId || null, "MODELO_IA")) ||
+    trimEnv(process.env.AI_DEFAULT_MODEL) ||
+    runtime.geminiModel;
+  const aiApiKey = (await resolveConfigValue(clienteId || null, "IA_API_KEY")) || getFallbackAiApiKey(aiProvider);
+  const googleRefreshToken =
+    (await resolveConfigValue(clienteId || null, "GOOGLE_REFRESH_TOKEN")) || runtime.googleRefreshToken;
+  const driveRootId =
+    integrations?.google_drive_folder_id ||
+    trimEnv(process.env.GOOGLE_DRIVE_FOLDER_ID) ||
+    trimEnv(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID);
+  const driveImagesId = integrations?.google_drive_imagens_folder_id || trimEnv(process.env.GOOGLE_DRIVE_IMAGES_FOLDER_ID);
+  const driveVideosId = integrations?.google_drive_videos_folder_id || trimEnv(process.env.GOOGLE_DRIVE_VIDEOS_FOLDER_ID);
+  const drivePublishedId =
+    integrations?.google_drive_publicados_folder_id || trimEnv(process.env.GOOGLE_DRIVE_PUBLISHED_FOLDER_ID);
+  const instagramAccessToken = integrations?.instagram_access_token || runtime.instagramAccessToken;
+  const instagramUserId = integrations?.instagram_user_id || runtime.instagramUserId;
+  const instagramBusinessId = integrations?.instagram_business_id || runtime.instagramBusinessId;
+  const graphApiVersion = integrations?.graph_api_version || runtime.graphApiVersion;
+  const googleConfigured = Boolean(
+    driveRootId &&
+      ((runtime.googleClientEmail && runtime.googlePrivateKey) ||
+        (runtime.googleClientId && runtime.googleClientSecret && googleRefreshToken)),
+  );
+  const instagramConfigured = Boolean(instagramAccessToken && (instagramUserId || instagramBusinessId));
+  const modoOperacao =
+    runtime.mode === "REAL" &&
+    runtime.appUrlIsPublic &&
+    integrations?.modo_operacao === "REAL" &&
+    googleConfigured &&
+    instagramConfigured
+      ? "REAL"
+      : "SIMULATOR";
+
+  return {
+    clienteId: clienteId || null,
+    driveRootId,
+    driveImagesId,
+    driveVideosId,
+    drivePublishedId,
+    googleRefreshToken,
+    graphApiVersion,
+    instagramAccessToken,
+    instagramUserId,
+    instagramBusinessId,
+    facebookPageId: integrations?.facebook_page_id || runtime.facebookPageId,
+    instagramGraphBaseUrl: runtime.instagramGraphBaseUrl,
+    googleConfigured,
+    instagramConfigured,
+    aiProvider: aiProvider.toUpperCase(),
+    aiModel,
+    aiApiKey,
+    aiConfigured: Boolean(aiApiKey),
+    modoOperacao,
   };
 }
 
@@ -451,11 +1330,11 @@ function assertPostMediaValidation(
   post: Post,
 ): { resolvedTipo: Post["tipo"]; width: number; height: number; aspectRatio: number; durationSeconds?: number } {
   if (!post.drive_url) {
-    throw new HttpError(400, "A postagem precisa ter uma mídia pública vinculada antes da publicação.");
+    throw new HttpError(400, "A postagem precisa ter uma mÃ­dia pÃºblica vinculada antes da publicaÃ§Ã£o.");
   }
 
   if (!payload || typeof payload !== "object") {
-    throw new HttpError(400, "A validação da mídia é obrigatória antes de agendar ou publicar.");
+    throw new HttpError(400, "A validaÃ§Ã£o da mÃ­dia Ã© obrigatÃ³ria antes de agendar ou publicar.");
   }
 
   const candidate = payload as {
@@ -485,41 +1364,41 @@ function assertPostMediaValidation(
         : post.tipo;
 
   if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0 || !Number.isFinite(aspectRatio)) {
-    throw new HttpError(400, "A validação da mídia retornou dimensões inválidas.");
+    throw new HttpError(400, "A validaÃ§Ã£o da mÃ­dia retornou dimensÃµes invÃ¡lidas.");
   }
 
   if (!isFeedCompatible) {
-    throw new HttpError(400, "A mídia não passou na validação para o feed do Instagram.");
+    throw new HttpError(400, "A mÃ­dia nÃ£o passou na validaÃ§Ã£o para o feed do Instagram.");
   }
 
   if (resolvedTipo === "VIDEO" || resolvedTipo === "REELS") {
     if (!Number.isFinite(durationSeconds) || Number(durationSeconds) <= 0) {
-      throw new HttpError(400, "NÃ£o foi possÃ­vel validar a duraÃ§Ã£o do vÃ­deo.");
+      throw new HttpError(400, "NÃƒÂ£o foi possÃƒÂ­vel validar a duraÃƒÂ§ÃƒÂ£o do vÃƒÂ­deo.");
     }
     if (Number(durationSeconds) > 180) {
       throw new HttpError(
         400,
-        "O vÃ­deo excede o limite atual de 3 minutos adotado para publicaÃ§Ã£o em Reels no Instagram.",
+        "O vÃƒÂ­deo excede o limite atual de 3 minutos adotado para publicaÃƒÂ§ÃƒÂ£o em Reels no Instagram.",
       );
     }
   }
 
   if (resolvedTipo === "REELS") {
     if (aspectRatio < 0.56 || aspectRatio > 0.8) {
-      throw new HttpError(400, "Reels devem estar entre 9:16 e 4:5 para publicação consistente.");
+      throw new HttpError(400, "Reels devem estar entre 9:16 e 4:5 para publicaÃ§Ã£o consistente.");
     }
     return { resolvedTipo, width, height, aspectRatio, durationSeconds };
   }
 
   if (resolvedTipo === "VIDEO") {
     if (aspectRatio < 0.56 || aspectRatio > 1.91) {
-      throw new HttpError(400, "Vídeos devem usar proporção entre 9:16 e 1.91:1.");
+      throw new HttpError(400, "VÃ­deos devem usar proporÃ§Ã£o entre 9:16 e 1.91:1.");
     }
     return { resolvedTipo, width, height, aspectRatio, durationSeconds };
   }
 
   if (aspectRatio < 0.8 || aspectRatio > 1.91) {
-    throw new HttpError(400, "Posts de feed devem usar proporção entre 4:5 e 1.91:1.");
+    throw new HttpError(400, "Posts de feed devem usar proporÃ§Ã£o entre 4:5 e 1.91:1.");
   }
 
   return { resolvedTipo, width, height, aspectRatio, durationSeconds };
@@ -535,7 +1414,14 @@ function escapeHtml(value: string): string {
 }
 
 function normalizePerfilPublicacao(user: Partial<Usuario>): PerfilPublicacao {
-  if (user.perfil_publicacao === "CRIADOR" || user.perfil_publicacao === "APROVADOR" || user.perfil_publicacao === "ADMIN") {
+  if (
+    user.perfil_publicacao === "CRIADOR" ||
+    user.perfil_publicacao === "APROVADOR" ||
+    user.perfil_publicacao === "ADMIN" ||
+    user.perfil_publicacao === "ADMIN_CLIENTE" ||
+    user.perfil_publicacao === "SUPER_ADMIN" ||
+    user.perfil_publicacao === "VISUALIZADOR"
+  ) {
     return user.perfil_publicacao;
   }
 
@@ -570,8 +1456,17 @@ function inferPerfilPublicacaoFromRawValue(value: unknown, fallbackPerfil?: unkn
   if (normalized === "ADMIN" || normalized === "ADMINISTRADOR") {
     return "ADMIN";
   }
+  if (normalized === "SUPER_ADMIN") {
+    return "SUPER_ADMIN";
+  }
+  if (normalized === "ADMIN_CLIENTE") {
+    return "ADMIN_CLIENTE";
+  }
   if (normalized === "APROVADOR") {
     return "APROVADOR";
+  }
+  if (normalized === "VISUALIZADOR") {
+    return "VISUALIZADOR";
   }
   return "CRIADOR";
 }
@@ -592,7 +1487,7 @@ async function supabaseRequest<T>(resource: string, init?: RequestInit): Promise
   const config = getRuntimeConfig();
 
   if (!(await canUseSupabase())) {
-    throw new Error("Supabase não configurado.");
+    throw new Error("Supabase nÃ£o configurado.");
   }
 
   const headers = new Headers(init?.headers);
@@ -615,20 +1510,26 @@ async function supabaseRequest<T>(resource: string, init?: RequestInit): Promise
   return safeParseJson<T>(response);
 }
 
-async function listPosts(): Promise<Post[]> {
+async function listPosts(clienteId?: string): Promise<Post[]> {
   if (!(await canUseSupabase())) {
-    return [...memoryStore.posts].sort((a, b) => b.criado_em.localeCompare(a.criado_em));
+    const items = clienteId ? memoryStore.posts.filter((post) => post.cliente_id === clienteId) : memoryStore.posts;
+    return [...items].sort((a, b) => b.criado_em.localeCompare(a.criado_em));
   }
 
-  return supabaseRequest<Post[]>("posts?select=*&order=criado_em.desc");
+  const query = clienteId ? `posts?select=*&cliente_id=eq.${sanitizeId(clienteId)}&order=criado_em.desc` : "posts?select=*&order=criado_em.desc";
+  return supabaseRequest<Post[]>(query);
 }
 
-async function getPostById(id: string): Promise<Post | null> {
+async function getPostById(id: string, clienteId?: string): Promise<Post | null> {
   if (!(await canUseSupabase())) {
-    return memoryStore.posts.find((post) => post.id === id) || null;
+    return memoryStore.posts.find((post) => post.id === id && (!clienteId || post.cliente_id === clienteId)) || null;
   }
 
-  const records = await supabaseRequest<Post[]>(`posts?id=eq.${sanitizeId(id)}&select=*`);
+  const records = await supabaseRequest<Post[]>(
+    clienteId
+      ? `posts?id=eq.${sanitizeId(id)}&cliente_id=eq.${sanitizeId(clienteId)}&select=*`
+      : `posts?id=eq.${sanitizeId(id)}&select=*`,
+  );
   return records[0] || null;
 }
 
@@ -650,34 +1551,39 @@ async function createPostRecord(payload: Omit<Post, "id">): Promise<Post> {
   return created[0];
 }
 
-async function updatePostRecord(id: string, patch: Partial<Post>): Promise<Post> {
+async function updatePostRecord(id: string, patch: Partial<Post> & { cliente_id?: string }): Promise<Post> {
   if (!(await canUseSupabase())) {
-    const index = memoryStore.posts.findIndex((post) => post.id === id);
+    const index = memoryStore.posts.findIndex((post) => post.id === id && (!patch.cliente_id || post.cliente_id === patch.cliente_id));
     if (index === -1) {
-      throw new Error("Post não encontrado.");
+      throw new Error("Post nÃ£o encontrado.");
     }
     memoryStore.posts[index] = { ...memoryStore.posts[index], ...patch };
     return memoryStore.posts[index];
   }
 
-  const updated = await supabaseRequest<Post[]>(`posts?id=eq.${sanitizeId(id)}`, {
+  const updated = await supabaseRequest<Post[]>(
+    patch.cliente_id
+      ? `posts?id=eq.${sanitizeId(id)}&cliente_id=eq.${sanitizeId(patch.cliente_id)}`
+      : `posts?id=eq.${sanitizeId(id)}`,
+    {
     method: "PATCH",
     headers: {
       Prefer: "return=representation",
     },
     body: JSON.stringify(patch),
-  });
+    },
+  );
 
   if (!updated[0]) {
-    throw new Error("Post não encontrado.");
+    throw new Error("Post nÃ£o encontrado.");
   }
 
   return updated[0];
 }
 
-async function deletePostRecord(id: string): Promise<Post | null> {
+async function deletePostRecord(id: string, clienteId?: string): Promise<Post | null> {
   if (!(await canUseSupabase())) {
-    const index = memoryStore.posts.findIndex((post) => post.id === id);
+    const index = memoryStore.posts.findIndex((post) => post.id === id && (!clienteId || post.cliente_id === clienteId));
     if (index === -1) {
       return null;
     }
@@ -685,22 +1591,29 @@ async function deletePostRecord(id: string): Promise<Post | null> {
     return deleted;
   }
 
-  const deleted = await supabaseRequest<Post[]>(`posts?id=eq.${sanitizeId(id)}`, {
+  const deleted = await supabaseRequest<Post[]>(
+    clienteId ? `posts?id=eq.${sanitizeId(id)}&cliente_id=eq.${sanitizeId(clienteId)}` : `posts?id=eq.${sanitizeId(id)}`,
+    {
     method: "DELETE",
     headers: {
       Prefer: "return=representation",
     },
-  });
+    },
+  );
 
   return deleted[0] || null;
 }
 
-async function listHistory(): Promise<HistoricoPost[]> {
+async function listHistory(clienteId?: string): Promise<HistoricoPost[]> {
   if (!(await canUseSupabase())) {
-    return [...memoryStore.historicos].sort((a, b) => b.criado_em.localeCompare(a.criado_em));
+    const items = clienteId ? memoryStore.historicos.filter((item) => item.cliente_id === clienteId) : memoryStore.historicos;
+    return [...items].sort((a, b) => b.criado_em.localeCompare(a.criado_em));
   }
 
-  return supabaseRequest<HistoricoPost[]>("historico_posts?select=*&order=criado_em.desc");
+  const query = clienteId
+    ? `historico_posts?select=*&cliente_id=eq.${sanitizeId(clienteId)}&order=criado_em.desc`
+    : "historico_posts?select=*&order=criado_em.desc";
+  return supabaseRequest<HistoricoPost[]>(query);
 }
 
 async function createHistoryRecord(payload: Omit<HistoricoPost, "id">): Promise<HistoricoPost> {
@@ -721,15 +1634,18 @@ async function createHistoryRecord(payload: Omit<HistoricoPost, "id">): Promise<
   return created[0];
 }
 
-async function listLogs(): Promise<LogMessage[]> {
+async function listLogs(clienteId?: string): Promise<LogMessage[]> {
   if (!(await canUseSupabase())) {
-    return [...memoryStore.logs].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    const items = clienteId ? memoryStore.logs.filter((item) => item.cliente_id === clienteId) : memoryStore.logs;
+    return [...items].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   }
 
   try {
-    return await supabaseRequest<LogMessage[]>("logs?select=*&order=timestamp.desc");
+    const query = clienteId ? `logs?select=*&cliente_id=eq.${sanitizeId(clienteId)}&order=timestamp.desc` : "logs?select=*&order=timestamp.desc";
+    return await supabaseRequest<LogMessage[]>(query);
   } catch {
-    return [...memoryStore.logs].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    const items = clienteId ? memoryStore.logs.filter((item) => item.cliente_id === clienteId) : memoryStore.logs;
+    return [...items].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   }
 }
 
@@ -758,15 +1674,16 @@ async function createLogRecord(payload: Omit<LogMessage, "id">): Promise<LogMess
   }
 }
 
-async function clearLogRecords(): Promise<void> {
-  memoryStore.logs = [];
+async function clearLogRecords(clienteId?: string): Promise<void> {
+  memoryStore.logs = clienteId ? memoryStore.logs.filter((log) => log.cliente_id !== clienteId) : [];
 
   if (!(await canUseSupabase())) {
     return;
   }
 
   try {
-    await supabaseRequest<unknown>("logs?id=not.is.null", {
+    const query = clienteId ? `logs?cliente_id=eq.${sanitizeId(clienteId)}&id=not.is.null` : "logs?id=not.is.null";
+    await supabaseRequest<unknown>(query, {
       method: "DELETE",
     });
   } catch {
@@ -801,7 +1718,7 @@ async function updateUserRecord(
   if (!(await canUseSupabase())) {
     const index = memoryStore.usuarios.findIndex((user) => user.id === id);
     if (index === -1) {
-      throw new Error("Usuário não encontrado.");
+      throw new Error("UsuÃ¡rio nÃ£o encontrado.");
     }
 
     memoryStore.usuarios[index] = {
@@ -842,7 +1759,7 @@ async function updateUserRecord(
   );
 
   if (!updated[0]) {
-    throw new Error("Usuário não encontrado.");
+    throw new Error("UsuÃ¡rio nÃ£o encontrado.");
   }
 
   usuariosColumnsCache = null;
@@ -907,11 +1824,56 @@ async function createOperationalUserRecord(payload: {
   });
 
   if (!created[0]) {
-    throw new Error("Falha ao criar usuário operacional.");
+    throw new Error("Falha ao criar usuÃ¡rio operacional.");
   }
 
   usuariosColumnsCache = null;
   return mapSupabaseUserRecord(created[0]);
+}
+
+async function listClienteUsuarios(clienteId: string): Promise<ClienteUsuario[]> {
+  if (!(await canUseSupabase())) {
+    return memoryStore.clienteUsuarios.filter((item) => item.cliente_id === clienteId);
+  }
+
+  try {
+    return await supabaseRequest<ClienteUsuario[]>(
+      `cliente_usuarios?cliente_id=eq.${sanitizeId(clienteId)}&select=*&order=criado_em.desc`,
+    );
+  } catch {
+    return memoryStore.clienteUsuarios.filter((item) => item.cliente_id === clienteId);
+  }
+}
+
+async function upsertClienteUsuario(clienteId: string, payload: Omit<ClienteUsuario, "id" | "cliente_id" | "criado_em"> & { usuario_id: string }) {
+  const now = new Date().toISOString();
+  const existing = (await listClienteUsuarios(clienteId)).find((item) => item.usuario_id === payload.usuario_id);
+  const record: ClienteUsuario = {
+    id: existing?.id || randomUUID(),
+    cliente_id: clienteId,
+    usuario_id: payload.usuario_id,
+    perfil: payload.perfil,
+    status: payload.status,
+    criado_em: existing?.criado_em || now,
+  };
+
+  if (!(await canUseSupabase())) {
+    const idx = memoryStore.clienteUsuarios.findIndex((item) => item.cliente_id === clienteId && item.usuario_id === payload.usuario_id);
+    if (idx >= 0) memoryStore.clienteUsuarios[idx] = record;
+    else memoryStore.clienteUsuarios.unshift(record);
+    return record;
+  }
+
+  const method = existing ? "PATCH" : "POST";
+  const endpoint = existing
+    ? `cliente_usuarios?cliente_id=eq.${sanitizeId(clienteId)}&usuario_id=eq.${sanitizeId(payload.usuario_id)}`
+    : "cliente_usuarios";
+  const result = await supabaseRequest<ClienteUsuario[]>(endpoint, {
+    method,
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify(record),
+  });
+  return result[0] || record;
 }
 
 async function deleteOperationalUserRecord(id: string): Promise<Usuario | null> {
@@ -957,13 +1919,13 @@ async function createSupabaseAuthUser(payload: { email: string; password: string
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Falha ao criar usuário no Supabase Auth: ${text}`);
+    throw new Error(`Falha ao criar usuÃ¡rio no Supabase Auth: ${text}`);
   }
 
   const data = JSON.parse(text) as { id?: string; user?: { id?: string } };
   const authUserId = data.user?.id || data.id;
   if (!authUserId) {
-    throw new Error("Supabase Auth não retornou o ID do usuário criado.");
+    throw new Error("Supabase Auth nÃ£o retornou o ID do usuÃ¡rio criado.");
   }
 
   return authUserId;
@@ -985,7 +1947,7 @@ async function deleteSupabaseAuthUser(authUserId: string): Promise<void> {
   });
 
   if (!response.ok) {
-    throw new Error(`Falha ao excluir usuário no Supabase Auth: ${await response.text()}`);
+    throw new Error(`Falha ao excluir usuÃ¡rio no Supabase Auth: ${await response.text()}`);
   }
 }
 
@@ -994,7 +1956,7 @@ async function updateSupabaseAuthUser(
   payload: { email?: string; password?: string; nome?: string },
 ): Promise<void> {
   if (!authUserId) {
-    throw new Error("Usuário sem vínculo com Supabase Auth.");
+    throw new Error("UsuÃ¡rio sem vÃ­nculo com Supabase Auth.");
   }
 
   const body: Record<string, unknown> = {};
@@ -1018,7 +1980,7 @@ async function updateSupabaseAuthUser(
   });
 
   if (!response.ok) {
-    throw new Error(`Falha ao atualizar usuário no Supabase Auth: ${await response.text()}`);
+    throw new Error(`Falha ao atualizar usuÃ¡rio no Supabase Auth: ${await response.text()}`);
   }
 }
 
@@ -1038,7 +2000,7 @@ async function findSupabaseAuthUserByEmail(email: string): Promise<{ id: string;
   });
 
   if (!response.ok) {
-    throw new Error(`Falha ao listar usuários do Supabase Auth: ${await response.text()}`);
+    throw new Error(`Falha ao listar usuÃ¡rios do Supabase Auth: ${await response.text()}`);
   }
 
   const data = (await response.json()) as { users?: Array<{ id?: string; email?: string }> };
@@ -1069,16 +2031,16 @@ async function fetchSupabaseAuthUser(accessToken: string): Promise<Authenticated
   });
 
   if (response.status === 401 || response.status === 403) {
-    throw new HttpError(401, "Sessão inválida ou expirada. Faça login novamente.");
+    throw new HttpError(401, "SessÃ£o invÃ¡lida ou expirada. FaÃ§a login novamente.");
   }
 
   if (!response.ok) {
-    throw new Error(`Falha ao validar sessão no Supabase Auth: ${await response.text()}`);
+    throw new Error(`Falha ao validar sessÃ£o no Supabase Auth: ${await response.text()}`);
   }
 
   const user = (await response.json()) as { id?: string; email?: string };
   if (!user.id || !user.email) {
-    throw new HttpError(401, "Sessão do Supabase sem identificação de usuário.");
+    throw new HttpError(401, "SessÃ£o do Supabase sem identificaÃ§Ã£o de usuÃ¡rio.");
   }
 
   return {
@@ -1136,8 +2098,10 @@ async function addLog(
   type: LogMessage["type"],
   message: string,
   payload?: unknown,
+  clienteId?: string,
 ): Promise<void> {
   await createLogRecord({
+    cliente_id: clienteId || null,
     timestamp: new Date().toISOString(),
     service,
     type,
@@ -1185,14 +2149,14 @@ function getPublishingMediaUrl(post: Post): string | undefined {
   return post.video_editado_drive_url || post.drive_url;
 }
 
-function assertPublicMediaUrl(mediaUrl: string | undefined, mediaKind: "imagem" | "vídeo"): string {
+function assertPublicMediaUrl(mediaUrl: string | undefined, mediaKind: "imagem" | "vÃ­deo"): string {
   if (!mediaUrl) {
-    throw new Error(`${mediaKind === "vídeo" ? "Vídeo" : "Imagem"} sem URL pública para publicação.`);
+    throw new Error(`${mediaKind === "vÃ­deo" ? "VÃ­deo" : "Imagem"} sem URL pÃºblica para publicaÃ§Ã£o.`);
   }
 
   if (isLocalhostUrl(mediaUrl)) {
     throw new Error(
-      `APP_URL precisa apontar para uma URL pública. A URL atual da mídia (${mediaUrl}) não pode ser acessada pela Meta.`,
+      `APP_URL precisa apontar para uma URL pÃºblica. A URL atual da mÃ­dia (${mediaUrl}) nÃ£o pode ser acessada pela Meta.`,
     );
   }
 
@@ -1215,10 +2179,16 @@ function filenameToTitle(filename: string): string {
   return filename.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim() || "Post importado";
 }
 
-function getMediaProxyUrl(fileId: string): string {
+function getMediaProxyUrl(fileId: string, clienteId?: string | null): string {
   const config = getRuntimeConfig();
   const signature = createHmac("sha256", config.mediaUrlSigningSecret).update(fileId).digest("hex");
-  return `${config.appUrl}/api/media/${encodeURIComponent(fileId)}?signature=${signature}`;
+  const params = new URLSearchParams({
+    signature,
+  });
+  if (clienteId) {
+    params.set("cliente_id", clienteId);
+  }
+  return `${config.appUrl}/api/media/${encodeURIComponent(fileId)}?${params.toString()}`;
 }
 
 function verifyMediaSignature(fileId: string, signature?: string): boolean {
@@ -1235,7 +2205,7 @@ function sleep(ms: number): Promise<void> {
 function dataUrlToBuffer(dataUrl: string): { buffer: Buffer; mimeType: string } {
   const match = dataUrl.match(/^data:(.*?);base64,(.*)$/);
   if (!match) {
-    throw new Error("Arquivo recebido em formato inválido.");
+    throw new Error("Arquivo recebido em formato invÃ¡lido.");
   }
 
   return {
@@ -1252,12 +2222,9 @@ function base64UrlEncode(value: Buffer | string): string {
     .replace(/=+$/g, "");
 }
 
-async function getGoogleAccessToken(): Promise<string> {
+async function getGoogleAccessToken(clienteId?: string | null): Promise<string> {
   const config = getRuntimeConfig();
-
-  if (!config.googleConfigured) {
-    throw new Error("Google Drive não configurado.");
-  }
+  const context = await getClienteOperationalContext(clienteId);
 
   if (config.googleClientEmail && config.googlePrivateKey) {
     const now = Math.floor(Date.now() / 1000);
@@ -1297,6 +2264,10 @@ async function getGoogleAccessToken(): Promise<string> {
     return json.access_token;
   }
 
+  if (!config.googleClientId || !config.googleClientSecret || !context.googleRefreshToken) {
+    throw new Error("Credenciais do Google Drive incompletas para o cliente atual.");
+  }
+
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: {
@@ -1305,7 +2276,7 @@ async function getGoogleAccessToken(): Promise<string> {
     body: new URLSearchParams({
       client_id: config.googleClientId,
       client_secret: config.googleClientSecret,
-      refresh_token: config.googleRefreshToken,
+      refresh_token: context.googleRefreshToken,
       grant_type: "refresh_token",
     }),
   });
@@ -1320,6 +2291,27 @@ async function getGoogleAccessToken(): Promise<string> {
 
 async function googleDriveRequest<T>(resource: string, init?: RequestInit): Promise<T> {
   const accessToken = await getGoogleAccessToken();
+  const response = await fetch(`https://www.googleapis.com/drive/v3/${resource}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      ...(init?.headers || {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Google Drive ${response.status}: ${await response.text()}`);
+  }
+
+  return safeParseJson<T>(response);
+}
+
+async function googleDriveRequestForClient<T>(
+  clienteId: string | null | undefined,
+  resource: string,
+  init?: RequestInit,
+): Promise<T> {
+  const accessToken = await getGoogleAccessToken(clienteId);
   const response = await fetch(`https://www.googleapis.com/drive/v3/${resource}`, {
     ...init,
     headers: {
@@ -1370,14 +2362,59 @@ async function findOrCreateDriveFolder(name: string, parentId: string): Promise<
   return json.id;
 }
 
-async function ensureDriveFolders(): Promise<DriveFolderMap> {
-  const config = getRuntimeConfig();
-  const imagensId = await findOrCreateDriveFolder("Imagens", config.googleDriveFolderId);
-  const videosId = await findOrCreateDriveFolder("Videos", config.googleDriveFolderId);
-  const publicadosId = await findOrCreateDriveFolder("Publicados", config.googleDriveFolderId);
+async function findOrCreateDriveFolderForClient(
+  clienteId: string | null | undefined,
+  name: string,
+  parentId: string,
+): Promise<string> {
+  const query = encodeURIComponent(
+    `mimeType='application/vnd.google-apps.folder' and trashed=false and name='${name}' and '${parentId}' in parents`,
+  );
+
+  const existing = await googleDriveRequestForClient<{ files: Array<{ id: string }> }>(
+    clienteId,
+    `files?q=${query}&fields=files(id)&includeItemsFromAllDrives=true&supportsAllDrives=true`,
+  );
+
+  if (existing.files[0]?.id) {
+    return existing.files[0].id;
+  }
+
+  const accessToken = await getGoogleAccessToken(clienteId);
+  const response = await fetch("https://www.googleapis.com/drive/v3/files?supportsAllDrives=true", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      name,
+      mimeType: "application/vnd.google-apps.folder",
+      parents: [parentId],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao criar pasta ${name}: ${await response.text()}`);
+  }
+
+  const json = (await response.json()) as { id: string };
+  return json.id;
+}
+
+async function ensureDriveFolders(clienteId?: string | null): Promise<DriveFolderMap> {
+  const context = await getClienteOperationalContext(clienteId);
+  if (!context.driveRootId) {
+    throw new Error("Cliente sem pasta raiz do Google Drive configurada.");
+  }
+
+  const imagensId = context.driveImagesId || (await findOrCreateDriveFolderForClient(clienteId, "Imagens", context.driveRootId));
+  const videosId = context.driveVideosId || (await findOrCreateDriveFolderForClient(clienteId, "Videos", context.driveRootId));
+  const publicadosId =
+    context.drivePublishedId || (await findOrCreateDriveFolderForClient(clienteId, "Publicados", context.driveRootId));
 
   return {
-    rootId: config.googleDriveFolderId,
+    rootId: context.driveRootId,
     imagensId,
     videosId,
     publicadosId,
@@ -1388,12 +2425,12 @@ async function uploadFileToGoogleDrive(input: {
   filename: string;
   mimeType: string;
   buffer: Buffer;
-}): Promise<{ fileId: string; url: string; folderName: string }> {
-  const folders = await ensureDriveFolders();
+}, clienteId?: string | null): Promise<{ fileId: string; url: string; folderName: string }> {
+  const folders = await ensureDriveFolders(clienteId);
   const isVideo = inferPostType(input.mimeType, input.filename) !== "IMAGEM";
   const parentId = isVideo ? folders.videosId : folders.imagensId;
   const folderName = isVideo ? "Videos" : "Imagens";
-  const accessToken = await getGoogleAccessToken();
+  const accessToken = await getGoogleAccessToken(clienteId);
   const boundary = `instaflow-${Date.now()}`;
   const metadata = {
     name: input.filename,
@@ -1423,7 +2460,7 @@ async function uploadFileToGoogleDrive(input: {
   const file = (await response.json()) as { id: string };
   return {
     fileId: file.id,
-    url: getMediaProxyUrl(file.id),
+    url: getMediaProxyUrl(file.id, clienteId),
     folderName,
   };
 }
@@ -1444,13 +2481,76 @@ async function listDriveFilesFromFolder(folderId: string): Promise<
   });
 }
 
-async function moveDriveFileToPublishedFolder(fileId: string): Promise<void> {
-  const folders = await ensureDriveFolders();
-  const metadata = await googleDriveRequest<{ parents?: string[] }>(
+async function listDriveFilesFromFolderForClient(
+  clienteId: string | null | undefined,
+  folderId: string,
+): Promise<Array<{ id: string; name: string; mimeType: string; createdTime?: string }>> {
+  const query = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+  const response = await googleDriveRequestForClient<{
+    files: Array<{ id: string; name: string; mimeType: string; createdTime?: string }>;
+  }>(
+    clienteId,
+    `files?q=${query}&fields=files(id,name,mimeType,createdTime)&includeItemsFromAllDrives=true&supportsAllDrives=true`,
+  );
+
+  return response.files.filter((file) => {
+    const type = inferPostType(file.mimeType, file.name);
+    return type === "IMAGEM" || type === "VIDEO";
+  });
+}
+
+async function testDriveFolderAccess(folderId: string): Promise<{ id: string; name: string; mimeType: string; itemCount: number }> {
+  if (!folderId) {
+    throw new Error("Informe o ID da pasta raiz do Google Drive.");
+  }
+
+  const folder = await googleDriveRequest<{ id: string; name: string; mimeType: string }>(
+    `files/${encodeURIComponent(folderId)}?fields=id,name,mimeType&supportsAllDrives=true`,
+  );
+
+  if (folder.mimeType !== "application/vnd.google-apps.folder") {
+    throw new Error("O ID informado não pertence a uma pasta do Google Drive.");
+  }
+
+  const children = await listDriveFilesFromFolder(folderId);
+  return {
+    ...folder,
+    itemCount: children.length,
+  };
+}
+
+async function testDriveFolderAccessForClient(
+  clienteId: string | null | undefined,
+  folderId: string,
+): Promise<{ id: string; name: string; mimeType: string; itemCount: number }> {
+  if (!folderId) {
+    throw new Error("Informe o ID da pasta raiz do Google Drive.");
+  }
+
+  const folder = await googleDriveRequestForClient<{ id: string; name: string; mimeType: string }>(
+    clienteId,
+    `files/${encodeURIComponent(folderId)}?fields=id,name,mimeType&supportsAllDrives=true`,
+  );
+
+  if (folder.mimeType !== "application/vnd.google-apps.folder") {
+    throw new Error("O ID informado não pertence a uma pasta do Google Drive.");
+  }
+
+  const children = await listDriveFilesFromFolderForClient(clienteId, folderId);
+  return {
+    ...folder,
+    itemCount: children.length,
+  };
+}
+
+async function moveDriveFileToPublishedFolder(fileId: string, clienteId?: string | null): Promise<void> {
+  const folders = await ensureDriveFolders(clienteId);
+  const metadata = await googleDriveRequestForClient<{ parents?: string[] }>(
+    clienteId,
     `files/${encodeURIComponent(fileId)}?fields=parents&supportsAllDrives=true`,
   );
   const removeParents = metadata.parents?.join(",") || "";
-  const accessToken = await getGoogleAccessToken();
+  const accessToken = await getGoogleAccessToken(clienteId);
   const params = new URLSearchParams({
     addParents: folders.publicadosId,
     supportsAllDrives: "true",
@@ -1483,90 +2583,40 @@ async function metaGraphRequest<T>(resource: string, init?: RequestInit): Promis
   return safeParseJson<T>(response);
 }
 
-function getInstagramPublishingActorId(): string {
-  const config = getRuntimeConfig();
-  return config.instagramUserId || config.instagramBusinessId;
+function getInstagramPublishingActorId(context: ClienteOperationalContext): string {
+  return context.instagramUserId || context.instagramBusinessId;
 }
 
-async function instagramGraphRequest<T>(resource: string, init?: RequestInit): Promise<T> {
-  const config = getRuntimeConfig();
-  const baseUrl = config.instagramGraphBaseUrl.replace(/\/$/, "");
-  const response = await fetch(`${baseUrl}/${config.graphApiVersion}${resource}`, init);
+async function instagramGraphRequest<T>(
+  context: ClienteOperationalContext,
+  resource: string,
+  init?: RequestInit,
+): Promise<T> {
+  const baseUrl = context.instagramGraphBaseUrl.replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/${context.graphApiVersion}${resource}`, init);
   if (!response.ok) {
     throw new Error(`Instagram Graph ${response.status}: ${await response.text()}`);
   }
   return safeParseJson<T>(response);
 }
 
-function mapPostTypeForApprovalWebhook(tipo: Post["tipo"]): "IMAGE" | "VIDEO" | "REELS" {
-  if (tipo === "VIDEO") return "VIDEO";
-  if (tipo === "REELS") return "REELS";
-  return "IMAGE";
-}
-
-async function notifyPendingApprovalWebhook(post: Post): Promise<void> {
-  const config = getRuntimeConfig();
-  if (!config.n8nApprovalWebhookUrl) {
-    return;
-  }
-
-  const payload = {
-    event: "post_pending_approval",
-    post: {
-      id: post.id,
-      titulo: post.titulo,
-      legenda: post.legenda,
-      tipo: mapPostTypeForApprovalWebhook(post.tipo),
-      status: "PENDENTE" as const,
-      media_url: post.drive_url || "",
-      approval_url: `${config.appUrl}/posts/${encodeURIComponent(post.id)}`,
-      created_at: post.criado_em,
-    },
-  };
-
-  try {
-    const response = await fetch(config.n8nApprovalWebhookUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      throw new Error(`n8n webhook ${response.status}: ${await response.text()}`);
-    }
-
-    await addLog("Database", "info", "Webhook de aprovação enviado ao n8n.", {
-      postId: post.id,
-      webhookUrl: config.n8nApprovalWebhookUrl,
-    });
-  } catch (error) {
-    await addLog("Database", "warn", "Falha ao enviar webhook de aprovação ao n8n.", {
-      postId: post.id,
-      webhookUrl: config.n8nApprovalWebhookUrl,
-      error: maskError(error),
-    });
-  }
-}
-
 async function createInstagramContainer(post: Post): Promise<string> {
-  const config = getRuntimeConfig();
-  const publishingActorId = getInstagramPublishingActorId();
+  const context = await getClienteOperationalContext(post.cliente_id || null);
+  const publishingActorId = getInstagramPublishingActorId(context);
   const body = new URLSearchParams({
-    access_token: config.instagramAccessToken,
+    access_token: context.instagramAccessToken,
     caption: buildCaption(post),
   });
 
   if (post.tipo === "VIDEO" || post.tipo === "REELS") {
-    const mediaUrl = assertPublicMediaUrl(getPublishingMediaUrl(post), "vídeo");
+    const mediaUrl = assertPublicMediaUrl(getPublishingMediaUrl(post), "vÃ­deo");
     body.set("media_type", "REELS");
     body.set("video_url", mediaUrl);
   } else {
     body.set("image_url", assertPublicMediaUrl(post.drive_url, "imagem"));
   }
 
-  const result = await instagramGraphRequest<{ id: string }>(`/${publishingActorId}/media`, {
+  const result = await instagramGraphRequest<{ id: string }>(context, `/${publishingActorId}/media`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -1577,14 +2627,15 @@ async function createInstagramContainer(post: Post): Promise<string> {
   return result.id;
 }
 
-async function waitForContainerReady(containerId: string): Promise<void> {
-  const config = getRuntimeConfig();
+async function waitForContainerReady(containerId: string, clienteId?: string | null): Promise<void> {
+  const context = await getClienteOperationalContext(clienteId);
   const startedAt = Date.now();
   let lastStatusCode: string | undefined;
 
   for (let attempt = 0; Date.now() - startedAt < INSTAGRAM_CONTAINER_WAIT_TIMEOUT_MS; attempt += 1) {
     const status = await instagramGraphRequest<{ status_code?: string; status?: string }>(
-      `/${containerId}?fields=status_code,status&access_token=${encodeURIComponent(config.instagramAccessToken)}`,
+      context,
+      `/${containerId}?fields=status_code,status&access_token=${encodeURIComponent(context.instagramAccessToken)}`,
     );
 
     const code = status.status_code || status.status;
@@ -1604,19 +2655,22 @@ async function waitForContainerReady(containerId: string): Promise<void> {
   }
 
   throw new Error(
-    `Tempo esgotado aguardando processamento da mídia no Instagram. Último status: ${lastStatusCode || "desconhecido"}.`,
+    `Tempo esgotado aguardando processamento da mÃ­dia no Instagram. Ãšltimo status: ${lastStatusCode || "desconhecido"}.`,
   );
 }
 
-async function publishInstagramContainer(creationId: string): Promise<{ mediaId: string; permalink?: string }> {
-  const config = getRuntimeConfig();
-  const publishingActorId = getInstagramPublishingActorId();
+async function publishInstagramContainer(
+  creationId: string,
+  clienteId?: string | null,
+): Promise<{ mediaId: string; permalink?: string }> {
+  const context = await getClienteOperationalContext(clienteId);
+  const publishingActorId = getInstagramPublishingActorId(context);
   const publishBody = new URLSearchParams({
     creation_id: creationId,
-    access_token: config.instagramAccessToken,
+    access_token: context.instagramAccessToken,
   });
 
-  const published = await instagramGraphRequest<{ id: string }>(`/${publishingActorId}/media_publish`, {
+  const published = await instagramGraphRequest<{ id: string }>(context, `/${publishingActorId}/media_publish`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -1627,7 +2681,8 @@ async function publishInstagramContainer(creationId: string): Promise<{ mediaId:
   let permalink: string | undefined;
   try {
     const media = await instagramGraphRequest<{ permalink?: string }>(
-      `/${published.id}?fields=permalink&access_token=${encodeURIComponent(config.instagramAccessToken)}`,
+      context,
+      `/${published.id}?fields=permalink&access_token=${encodeURIComponent(context.instagramAccessToken)}`,
     );
     permalink = media.permalink;
   } catch {
@@ -1641,14 +2696,15 @@ async function publishInstagramContainer(creationId: string): Promise<{ mediaId:
 }
 
 async function publishPost(post: Post, author: string): Promise<Post> {
-  await addLog("Instagram API", "info", `Iniciando publicação do post '${post.titulo}'.`, {
+  const context = await getClienteOperationalContext(post.cliente_id || null);
+  await addLog("Instagram API", "info", `Iniciando publicaÃ§Ã£o do post '${post.titulo}'.`, {
     postId: post.id,
     postType: post.tipo,
-    publishingActorId: getInstagramPublishingActorId(),
-    graphBaseUrl: getRuntimeConfig().instagramGraphBaseUrl,
-  });
+    publishingActorId: getInstagramPublishingActorId(context),
+    graphBaseUrl: context.instagramGraphBaseUrl,
+  }, post.cliente_id || undefined);
 
-  if (!(await canUseRealMode())) {
+  if (!(await canUseRealMode(post.cliente_id || null))) {
     const simulated = await updatePostRecord(post.id, {
       status: "PUBLICADA",
       instagram_post_id: `sim_${Date.now()}`,
@@ -1658,27 +2714,28 @@ async function publishPost(post: Post, author: string): Promise<Post> {
     });
 
     await createHistoryRecord({
+      cliente_id: post.cliente_id || null,
       post_id: simulated.id,
       post_titulo: simulated.titulo,
       usuario: author,
       acao: "Publicado",
-      observacao: "Modo real indisponível. Publicação mantida apenas em sandbox operacional.",
+      observacao: "Modo real indisponÃ­vel. PublicaÃ§Ã£o mantida apenas em sandbox operacional.",
       criado_em: new Date().toISOString(),
     });
 
-    await addLog("Instagram API", "warn", "Publicação executada em sandbox por falta de configuração completa.", {
+    await addLog("Instagram API", "warn", "PublicaÃ§Ã£o executada em sandbox por falta de configuraÃ§Ã£o completa.", {
       missingEnv: getRuntimeConfig().missingEnv,
       missingTables: (await inspectSupabaseSchema()).missingTables,
-    });
+    }, post.cliente_id || undefined);
 
     return simulated;
   }
 
   const creationId = await createInstagramContainer(post);
-  await addLog("Instagram API", "info", "Container de mídia criado na Meta.", {
+  await addLog("Instagram API", "info", "Container de mÃ­dia criado na Meta.", {
     postId: post.id,
     creationId,
-  });
+  }, post.cliente_id || undefined);
 
   await updatePostRecord(post.id, {
     creation_id: creationId,
@@ -1686,8 +2743,8 @@ async function publishPost(post: Post, author: string): Promise<Post> {
     atualizado_em: new Date().toISOString(),
   });
 
-  await waitForContainerReady(creationId);
-  const published = await publishInstagramContainer(creationId);
+  await waitForContainerReady(creationId, post.cliente_id || null);
+  const published = await publishInstagramContainer(creationId, post.cliente_id || null);
   const next = await updatePostRecord(post.id, {
     status: "PUBLICADA",
     instagram_post_id: published.mediaId,
@@ -1697,47 +2754,48 @@ async function publishPost(post: Post, author: string): Promise<Post> {
   });
 
   await createHistoryRecord({
+    cliente_id: post.cliente_id || null,
     post_id: next.id,
     post_titulo: next.titulo,
     usuario: author,
     acao: "Publicado",
     observacao: published.permalink
-      ? `Publicação concluída com sucesso. Permalink: ${published.permalink}`
-      : `Publicação concluída com sucesso. Media ID: ${published.mediaId}`,
+      ? `PublicaÃ§Ã£o concluÃ­da com sucesso. Permalink: ${published.permalink}`
+      : `PublicaÃ§Ã£o concluÃ­da com sucesso. Media ID: ${published.mediaId}`,
     criado_em: new Date().toISOString(),
   });
 
   await addLog("Instagram API", "success", `Post '${next.titulo}' publicado com sucesso.`, {
     mediaId: published.mediaId,
     permalink: published.permalink,
-  });
+  }, next.cliente_id || undefined);
 
   if (next.drive_file_id) {
     try {
-      await moveDriveFileToPublishedFolder(next.drive_file_id);
-      await addLog("Google Drive", "info", "Mídia movida para a pasta Publicados.", {
+      await moveDriveFileToPublishedFolder(next.drive_file_id, next.cliente_id || null);
+      await addLog("Google Drive", "info", "MÃ­dia movida para a pasta Publicados.", {
         fileId: next.drive_file_id,
-      });
+      }, next.cliente_id || undefined);
     } catch (error) {
-      await addLog("Google Drive", "warn", "Falha ao mover mídia para Publicados.", {
+      await addLog("Google Drive", "warn", "Falha ao mover mÃ­dia para Publicados.", {
         fileId: next.drive_file_id,
         error: maskError(error),
-      });
+      }, next.cliente_id || undefined);
     }
   }
 
   return next;
 }
 
-async function importGoogleDrivePosts(author: string): Promise<Post[]> {
-  const folders = await ensureDriveFolders();
+async function importGoogleDrivePosts(author: string, clienteId?: string | null): Promise<Post[]> {
+  const folders = await ensureDriveFolders(clienteId);
   const [images, videos] = await Promise.all([
-    listDriveFilesFromFolder(folders.imagensId),
-    listDriveFilesFromFolder(folders.videosId),
+    listDriveFilesFromFolderForClient(clienteId, folders.imagensId),
+    listDriveFilesFromFolderForClient(clienteId, folders.videosId),
   ]);
 
   const files = [...images, ...videos];
-  const existingPosts = await listPosts();
+  const existingPosts = await listPosts(clienteId || undefined);
   const existingDriveIds = new Set(existingPosts.map((post) => post.drive_file_id).filter(Boolean));
   const createdPosts: Post[] = [];
 
@@ -1748,11 +2806,12 @@ async function importGoogleDrivePosts(author: string): Promise<Post[]> {
 
     const now = new Date().toISOString();
     const payload: Omit<Post, "id"> = {
+      cliente_id: clienteId || null,
       titulo: filenameToTitle(file.name),
       legenda: "",
       tipo: inferPostType(file.mimeType, file.name),
       drive_file_id: file.id,
-      drive_url: getMediaProxyUrl(file.id),
+      drive_url: getMediaProxyUrl(file.id, clienteId),
       status: "PENDENTE",
       hashtags: "",
       criado_em: file.createdTime || now,
@@ -1762,6 +2821,7 @@ async function importGoogleDrivePosts(author: string): Promise<Post[]> {
     const created = await createPostRecord(payload);
 
     await createHistoryRecord({
+      cliente_id: created.cliente_id || null,
       post_id: created.id,
       post_titulo: created.titulo,
       usuario: author,
@@ -1770,14 +2830,12 @@ async function importGoogleDrivePosts(author: string): Promise<Post[]> {
       criado_em: now,
     });
 
-    await notifyPendingApprovalWebhook(created);
-
     createdPosts.push(created);
   }
 
-  await addLog("Google Drive", "success", "Importação do Google Drive concluída.", {
+  await addLog("Google Drive", "success", "ImportaÃ§Ã£o do Google Drive concluÃ­da.", {
     imported: createdPosts.length,
-  });
+  }, undefined);
 
   return createdPosts;
 }
@@ -1798,11 +2856,12 @@ async function runScheduledPublications(): Promise<number> {
 
     processed += 1;
     await createHistoryRecord({
+      cliente_id: post.cliente_id || null,
       post_id: post.id,
       post_titulo: post.titulo,
       usuario: "Scheduler",
       acao: "Aprovado",
-      observacao: `Horário de agendamento atingido em ${now.toISOString()}.`,
+      observacao: `HorÃ¡rio de agendamento atingido em ${now.toISOString()}.`,
       criado_em: now.toISOString(),
     });
 
@@ -1817,7 +2876,7 @@ async function runScheduledPublications(): Promise<number> {
       await addLog("Scheduler", "error", `Falha ao publicar post agendado '${post.titulo}'.`, {
         postId: post.id,
         error: maskError(error),
-      });
+      }, post.cliente_id || undefined);
     }
   }
 
@@ -1847,12 +2906,12 @@ async function getActingUserFromRequest(req: express.Request): Promise<ActingUse
     if (!operationalUser) {
       throw new HttpError(
         403,
-        `O usuário autenticado '${authUser.email}' não possui cadastro operacional ativo na tabela usuarios.`,
+        `O usuÃ¡rio autenticado '${authUser.email}' nÃ£o possui cadastro operacional ativo na tabela usuarios.`,
       );
     }
 
     if (!operationalUser.ativo) {
-      throw new HttpError(403, `Usuário '${operationalUser.email}' está inativo.`);
+      throw new HttpError(403, `UsuÃ¡rio '${operationalUser.email}' estÃ¡ inativo.`);
     }
 
     return toActingUser(operationalUser);
@@ -1861,7 +2920,7 @@ async function getActingUserFromRequest(req: express.Request): Promise<ActingUse
   const requestedEmail = getCurrentUserEmail(req.headers["x-user-email"]).trim().toLowerCase();
   const requestedName = getCurrentUserName(req.headers["x-user-name"], "").trim().toLowerCase();
   if (!requestedEmail && !requestedName) {
-    throw new HttpError(401, "Autenticação obrigatória.");
+    throw new HttpError(401, "AutenticaÃ§Ã£o obrigatÃ³ria.");
   }
 
   const users = await listUsers();
@@ -1878,40 +2937,44 @@ async function getActingUserFromRequest(req: express.Request): Promise<ActingUse
   }
 
   if (!match) {
-    throw new Error("Nenhum usuário disponível na base de usuários.");
+    throw new Error("Nenhum usuÃ¡rio disponÃ­vel na base de usuÃ¡rios.");
   }
 
   if (!match.ativo) {
-    throw new Error(`Usuário '${match.email}' está inativo.`);
+    throw new Error(`UsuÃ¡rio '${match.email}' estÃ¡ inativo.`);
   }
 
   return toActingUser(match);
 }
 
 function canCreatePosts(user: ActingUser): boolean {
-  return user.perfil_publicacao === "CRIADOR" || user.perfil_publicacao === "ADMIN";
+  return user.perfil_publicacao === "CRIADOR" || user.perfil_publicacao === "ADMIN" || user.perfil_publicacao === "ADMIN_CLIENTE";
 }
 
 function canApprovePosts(user: ActingUser): boolean {
-  return user.perfil_publicacao === "APROVADOR" || user.perfil_publicacao === "ADMIN";
+  return user.perfil_publicacao === "APROVADOR" || user.perfil_publicacao === "ADMIN" || user.perfil_publicacao === "ADMIN_CLIENTE";
 }
 
 function assertCanCreatePosts(user: ActingUser) {
   if (!canCreatePosts(user)) {
-    throw new HttpError(403, `Usuário '${user.email}' não possui permissão para criar publicações.`);
+    throw new HttpError(403, `UsuÃ¡rio '${user.email}' nÃ£o possui permissÃ£o para criar publicaÃ§Ãµes.`);
   }
 }
 
 function assertCanApprovePosts(user: ActingUser) {
   if (!canApprovePosts(user)) {
-    throw new HttpError(403, `Usuário '${user.email}' não possui permissão para aprovar ou publicar.`);
+    throw new HttpError(403, `UsuÃ¡rio '${user.email}' nÃ£o possui permissÃ£o para aprovar ou publicar.`);
   }
 }
 
 function assertIsAdmin(user: ActingUser) {
-  if (user.perfil_publicacao !== "ADMIN") {
-    throw new HttpError(403, `Usuário '${user.email}' não possui permissão administrativa.`);
+  if (user.perfil_publicacao !== "ADMIN" && user.perfil_publicacao !== "SUPER_ADMIN") {
+    throw new HttpError(403, `UsuÃ¡rio '${user.email}' nÃ£o possui permissÃ£o administrativa.`);
   }
+}
+
+function canEditClientSettings(user: ActingUser): boolean {
+  return user.perfil_publicacao === "SUPER_ADMIN" || user.perfil_publicacao === "ADMIN" || user.perfil_publicacao === "ADMIN_CLIENTE";
 }
 
 function parseBody<T>(value: T | undefined, fallback: T): T {
@@ -1934,7 +2997,8 @@ function respondWithError(
 app.get("/api/posts", async (req, res) => {
   try {
     await getActingUserFromRequest(req);
-    res.json({ posts: await listPosts() });
+    const clienteId = await resolveClienteIdFromRequest(req);
+    res.json({ posts: await listPosts(clienteId), clienteId });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar posts.");
   }
@@ -1943,9 +3007,10 @@ app.get("/api/posts", async (req, res) => {
 app.get("/api/posts/:id", async (req, res) => {
   try {
     await getActingUserFromRequest(req);
-    const post = await getPostById(req.params.id);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const post = await getPostById(req.params.id, clienteId);
     if (!post) {
-      return res.status(404).json({ error: "Post não encontrado." });
+      return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
     res.json({ post });
   } catch (error) {
@@ -1957,9 +3022,11 @@ app.post("/api/posts", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanCreatePosts(actingUser);
+    const clienteId = await resolveClienteIdFromRequest(req);
     const now = new Date().toISOString();
     const payload: Omit<Post, "id"> = {
-      titulo: parseBody(req.body.titulo, "Sem Título"),
+      cliente_id: clienteId,
+      titulo: parseBody(req.body.titulo, "Sem TÃ­tulo"),
       legenda: parseBody(req.body.legenda, ""),
       tipo: normalizePostTypeInput(req.body.tipo, req.body.filename),
       drive_file_id: req.body.drive_file_id || undefined,
@@ -1990,25 +3057,23 @@ app.post("/api/posts", async (req, res) => {
     const created = await createPostRecord(payload);
 
     await createHistoryRecord({
+      cliente_id: clienteId,
       post_id: created.id,
       post_titulo: created.titulo,
       usuario: actingUser.nome,
-      acao: created.status === "PENDENTE" ? "Envio para Aprovação" : "Criação de Post",
+      acao: created.status === "PENDENTE" ? "Envio para AprovaÃ§Ã£o" : "CriaÃ§Ã£o de Post",
       observacao:
         created.status === "PENDENTE"
-          ? "Post criado com mídia vinculada e enviado para aprovação."
+          ? "Post criado com mÃ­dia vinculada e enviado para aprovaÃ§Ã£o."
           : "Post salvo como rascunho.",
       criado_em: now,
     });
 
     await addLog("Database", "success", `Novo post '${created.titulo}' persistido.`, {
+      clienteId,
       postId: created.id,
       status: created.status,
     });
-
-    if (created.status === "PENDENTE") {
-      await notifyPendingApprovalWebhook(created);
-    }
 
     res.status(201).json({ success: true, post: created });
   } catch (error) {
@@ -2018,9 +3083,10 @@ app.post("/api/posts", async (req, res) => {
 
 app.put("/api/posts/:id", async (req, res) => {
   try {
-    const existing = await getPostById(req.params.id);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const existing = await getPostById(req.params.id, clienteId);
     if (!existing) {
-      return res.status(404).json({ error: "Post não encontrado." });
+      return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
 
     const actingUser = await getActingUserFromRequest(req);
@@ -2052,6 +3118,7 @@ app.put("/api/posts/:id", async (req, res) => {
       thumbnail_drive_url: req.body.thumbnail_drive_url ?? existing.thumbnail_drive_url,
       thumbnail_time_sec: req.body.thumbnail_time_sec ?? existing.thumbnail_time_sec,
       video_edit_metadata: req.body.video_edit_metadata ?? existing.video_edit_metadata,
+      cliente_id: clienteId,
     };
     assertVideoPostCanAdvance({
       tipo: patch.tipo,
@@ -2061,10 +3128,11 @@ app.put("/api/posts/:id", async (req, res) => {
     const next = await updatePostRecord(req.params.id, patch);
 
     await createHistoryRecord({
+      cliente_id: clienteId,
       post_id: next.id,
       post_titulo: next.titulo,
       usuario: actingUser.nome,
-      acao: "Edição de Post",
+      acao: "EdiÃ§Ã£o de Post",
       observacao: "Campos do post atualizados no painel.",
       criado_em: new Date().toISOString(),
     });
@@ -2072,10 +3140,6 @@ app.put("/api/posts/:id", async (req, res) => {
     await addLog("Database", "info", `Post '${next.titulo}' atualizado.`, {
       postId: next.id,
     });
-
-    if (next.status === "PENDENTE") {
-      await notifyPendingApprovalWebhook(next);
-    }
 
     res.json({ success: true, post: next });
   } catch (error) {
@@ -2087,16 +3151,17 @@ app.delete("/api/posts/:id", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanCreatePosts(actingUser);
-    const deleted = await deletePostRecord(req.params.id);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const deleted = await deletePostRecord(req.params.id, clienteId);
     if (!deleted) {
-      return res.status(404).json({ error: "Post não encontrado." });
+      return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
 
     await addLog("Database", "warn", `Post '${deleted.titulo}' removido.`, {
       postId: deleted.id,
       postTitle: deleted.titulo,
       actor: actingUser.nome,
-      action: "Remoção de Post",
+      action: "RemoÃ§Ã£o de Post",
     });
 
     res.json({ success: true });
@@ -2109,9 +3174,10 @@ app.post("/api/posts/:id/submit", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanCreatePosts(actingUser);
-    const post = await getPostById(req.params.id);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const post = await getPostById(req.params.id, clienteId);
     if (!post) {
-      return res.status(404).json({ error: "Post não encontrado." });
+      return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
 
     assertVideoPostCanAdvance({
@@ -2121,25 +3187,25 @@ app.post("/api/posts/:id/submit", async (req, res) => {
     });
 
     const next = await updatePostRecord(req.params.id, {
+      cliente_id: clienteId,
       status: "PENDENTE",
       atualizado_em: new Date().toISOString(),
       erro_detalhe: undefined,
     });
 
     await createHistoryRecord({
+      cliente_id: clienteId,
       post_id: next.id,
       post_titulo: next.titulo,
       usuario: actingUser.nome,
-      acao: "Envio para Aprovação",
-      observacao: "Post encaminhado para moderação.",
+      acao: "Envio para AprovaÃ§Ã£o",
+      observacao: "Post encaminhado para moderaÃ§Ã£o.",
       criado_em: new Date().toISOString(),
     });
 
-    await notifyPendingApprovalWebhook(next);
-
     res.json({ success: true, post: next });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao enviar post para aprovação.");
+    respondWithError(res, error, "Database", "Falha ao enviar post para aprovaÃ§Ã£o.");
   }
 });
 
@@ -2147,18 +3213,21 @@ app.post("/api/posts/:id/reject", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const post = await getPostById(req.params.id);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const post = await getPostById(req.params.id, clienteId);
     if (!post) {
-      return res.status(404).json({ error: "Post não encontrado." });
+      return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
 
     const next = await updatePostRecord(req.params.id, {
+      cliente_id: clienteId,
       status: "REJEITADA",
       atualizado_em: new Date().toISOString(),
       erro_detalhe: undefined,
     });
 
     await createHistoryRecord({
+      cliente_id: clienteId,
       post_id: next.id,
       post_titulo: next.titulo,
       usuario: actingUser.nome,
@@ -2182,9 +3251,10 @@ app.post("/api/posts/:id/approve", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const post = await getPostById(req.params.id);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const post = await getPostById(req.params.id, clienteId);
     if (!post) {
-      return res.status(404).json({ error: "Post não encontrado." });
+      return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
 
     const action = req.body.action === "schedule" ? "schedule" : "instant";
@@ -2200,7 +3270,7 @@ app.post("/api/posts/:id/approve", async (req, res) => {
     if (action === "schedule") {
       const appointmentTime = req.body.appointmentTime;
       if (!appointmentTime) {
-        return res.status(400).json({ error: "appointmentTime é obrigatório para agendamento." });
+        return res.status(400).json({ error: "appointmentTime Ã© obrigatÃ³rio para agendamento." });
       }
 
       const next = await updatePostRecord(req.params.id, {
@@ -2211,6 +3281,7 @@ app.post("/api/posts/:id/approve", async (req, res) => {
       });
 
       await createHistoryRecord({
+        cliente_id: clienteId,
         post_id: next.id,
         post_titulo: next.titulo,
         usuario: actingUser.nome,
@@ -2222,17 +3293,18 @@ app.post("/api/posts/:id/approve", async (req, res) => {
       await addLog("Scheduler", "info", `Post '${next.titulo}' agendado.`, {
         postId: next.id,
         appointmentTime,
-      });
+      }, clienteId);
 
       return res.json({ success: true, post: next });
     }
 
     await createHistoryRecord({
+      cliente_id: clienteId,
       post_id: post.id,
       post_titulo: post.titulo,
       usuario: actingUser.nome,
       acao: "Aprovado",
-      observacao: "Aprovação concedida para publicação imediata.",
+      observacao: "AprovaÃ§Ã£o concedida para publicaÃ§Ã£o imediata.",
       criado_em: new Date().toISOString(),
     });
 
@@ -2245,6 +3317,7 @@ app.post("/api/posts/:id/approve", async (req, res) => {
           status: "ERRO",
           erro_detalhe: maskError(error),
           atualizado_em: new Date().toISOString(),
+          cliente_id: await resolveClienteIdFromRequest(req),
         });
       } catch {
         // Ignore secondary failure.
@@ -2258,9 +3331,10 @@ app.post("/api/posts/aprovar", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const post = await getPostById(req.body.id);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const post = await getPostById(req.body.id, clienteId);
     if (!post) {
-      return res.status(404).json({ error: "Post não encontrado." });
+      return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
 
     const action = req.body.action === "schedule" ? "schedule" : "instant";
@@ -2276,7 +3350,7 @@ app.post("/api/posts/aprovar", async (req, res) => {
     if (action === "schedule") {
       const appointmentTime = req.body.appointmentTime;
       if (!appointmentTime) {
-        return res.status(400).json({ error: "appointmentTime é obrigatório para agendamento." });
+        return res.status(400).json({ error: "appointmentTime Ã© obrigatÃ³rio para agendamento." });
       }
 
       const next = await updatePostRecord(post.id, {
@@ -2287,6 +3361,7 @@ app.post("/api/posts/aprovar", async (req, res) => {
       });
 
       await createHistoryRecord({
+        cliente_id: clienteId,
         post_id: next.id,
         post_titulo: next.titulo,
         usuario: actingUser.nome,
@@ -2309,18 +3384,21 @@ app.post("/api/posts/rejeitar", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const post = await getPostById(req.body.id);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const post = await getPostById(req.body.id, clienteId);
     if (!post) {
-      return res.status(404).json({ error: "Post não encontrado." });
+      return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
 
     const next = await updatePostRecord(post.id, {
       status: "REJEITADA",
       atualizado_em: new Date().toISOString(),
       erro_detalhe: undefined,
+      cliente_id: clienteId,
     });
 
     await createHistoryRecord({
+      cliente_id: clienteId,
       post_id: next.id,
       post_titulo: next.titulo,
       usuario: actingUser.nome,
@@ -2339,9 +3417,10 @@ app.post("/api/posts/publicar", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const post = await getPostById(req.body.id);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const post = await getPostById(req.body.id, clienteId);
     if (!post) {
-      return res.status(404).json({ error: "Post não encontrado." });
+      return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
     const published = await publishPost(post, actingUser.nome);
     res.json({ success: true, post: published });
@@ -2354,7 +3433,7 @@ async function handleDriveUpload(req: express.Request, res: express.Response) {
   try {
     const actingUser = await getActingUserFromRequest(req);
     if (!canCreatePosts(actingUser) && !canApprovePosts(actingUser)) {
-      throw new HttpError(403, `Usuário '${actingUser.email}' não possui permissão para enviar mídias.`);
+      throw new HttpError(403, `UsuÃ¡rio '${actingUser.email}' nÃ£o possui permissÃ£o para enviar mÃ­dias.`);
     }
     const filename = trimEnv(req.body.filename) || `upload-${Date.now()}`;
     const dataUrl = trimEnv(req.body.base64Data);
@@ -2362,7 +3441,7 @@ async function handleDriveUpload(req: express.Request, res: express.Response) {
     const inferredType = inferPostType(explicitMimeType, filename);
 
     if (!dataUrl) {
-      return res.status(400).json({ error: "base64Data é obrigatório." });
+      return res.status(400).json({ error: "base64Data Ã© obrigatÃ³rio." });
     }
     if (inferredType === "VIDEO" && !ACCEPTED_VIDEO_UPLOAD_MIME_TYPES.has(explicitMimeType)) {
       return res.status(400).json({ error: "Formato de video nao suportado para este fluxo. Use MP4, MOV ou M4V." });
@@ -2374,15 +3453,16 @@ async function handleDriveUpload(req: express.Request, res: express.Response) {
 
     const parsed = dataUrlToBuffer(dataUrl);
     const mimeType = parsed.mimeType || explicitMimeType;
+    const clienteId = await resolveClienteIdFromRequest(req);
 
     await addLog("Google Drive", "info", `Recebido upload de '${filename}'.`, {
       filename,
       mimeType,
       sizeBytes: req.body.sizeBytes,
-      mode: (await getSettingsView()).operationalMode,
-    });
+      mode: (await getSettingsView(clienteId)).operationalMode,
+    }, clienteId);
 
-    if (!(await canUseRealMode())) {
+    if (!(await canUseRealMode(clienteId))) {
       return res.json({
         success: true,
         fileId: `sandbox_${randomUUID()}`,
@@ -2397,9 +3477,9 @@ async function handleDriveUpload(req: express.Request, res: express.Response) {
       filename,
       mimeType,
       buffer: parsed.buffer,
-    });
+    }, clienteId);
 
-    await addLog("Google Drive", "success", `Upload concluído para '${filename}'.`, {
+    await addLog("Google Drive", "success", `Upload concluÃ­do para '${filename}'.`, {
       fileId: uploaded.fileId,
       folder: uploaded.folderName,
       publicUrl: uploaded.url,
@@ -2422,12 +3502,14 @@ app.post("/api/posts/:id/media", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const existing = await getPostById(req.params.id);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const existing = await getPostById(req.params.id, clienteId);
     if (!existing) {
-      return res.status(404).json({ error: "Post não encontrado." });
+      return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
 
     const next = await updatePostRecord(req.params.id, {
+      cliente_id: clienteId,
       drive_url: req.body.drive_url || existing.drive_url,
       drive_file_id: req.body.drive_file_id || existing.drive_file_id,
       tipo: normalizePostTypeInput(req.body.tipo, req.body.filename || existing.titulo),
@@ -2439,19 +3521,19 @@ app.post("/api/posts/:id/media", async (req, res) => {
       post_id: next.id,
       post_titulo: next.titulo,
       usuario: actingUser.nome,
-      acao: "Troca de Mídia",
-      observacao: "Mídia atualizada na etapa de moderação.",
+      acao: "Troca de MÃ­dia",
+      observacao: "MÃ­dia atualizada na etapa de moderaÃ§Ã£o.",
       criado_em: new Date().toISOString(),
     });
 
-    await addLog("Database", "info", `Mídia do post '${next.titulo}' atualizada na moderação.`, {
+    await addLog("Database", "info", `MÃ­dia do post '${next.titulo}' atualizada na moderaÃ§Ã£o.`, {
       postId: next.id,
       driveFileId: next.drive_file_id,
-    });
+    }, clienteId);
 
     return res.json({ success: true, post: next });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao atualizar a mídia do post.");
+    respondWithError(res, error, "Database", "Falha ao atualizar a mÃ­dia do post.");
   }
 });
 
@@ -2461,14 +3543,15 @@ app.post("/api/simulate-drive-upload", handleDriveUpload);
 app.get("/api/media/:fileId", async (req, res) => {
   try {
     if (!verifyMediaSignature(req.params.fileId, String(req.query.signature || ""))) {
-      return res.status(403).json({ error: "Assinatura de mídia inválida." });
+      return res.status(403).json({ error: "Assinatura de mÃ­dia invÃ¡lida." });
     }
 
-    if (!(await canUseRealMode())) {
-      return res.status(404).json({ error: "Mídia não disponível fora do modo real." });
+    const clienteId = await resolveClienteIdFromRequest(req);
+    if (!(await canUseRealMode(clienteId))) {
+      return res.status(404).json({ error: "MÃ­dia nÃ£o disponÃ­vel fora do modo real." });
     }
 
-    const accessToken = await getGoogleAccessToken();
+    const accessToken = await getGoogleAccessToken(clienteId);
     const response = await fetch(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(req.params.fileId)}?alt=media&supportsAllDrives=true`,
       {
@@ -2488,15 +3571,51 @@ app.get("/api/media/:fileId", async (req, res) => {
     res.setHeader("Cache-Control", "private, max-age=300");
     res.send(Buffer.from(arrayBuffer));
   } catch (error) {
-    respondWithError(res, error, "Google Drive", "Falha ao servir mídia do Google Drive.", 502);
+    respondWithError(res, error, "Google Drive", "Falha ao servir mÃ­dia do Google Drive.", 502);
   }
 });
 
 app.get("/api/google/oauth/start", (req, res) => {
   const config = getRuntimeConfig();
-  if (!config.googleClientId || !config.googleRedirectUri) {
-    return res.status(400).json({ error: "GOOGLE_CLIENT_ID e GOOGLE_REDIRECT_URI são obrigatórios." });
+  if (!config.googleClientId || !config.googleClientSecret || !config.googleRedirectUri) {
+    const missing = [
+      !config.googleClientId ? "GOOGLE_CLIENT_ID" : "",
+      !config.googleClientSecret ? "GOOGLE_CLIENT_SECRET" : "",
+      !config.googleRedirectUri ? "GOOGLE_REDIRECT_URI" : "",
+    ].filter(Boolean);
+    const wantsJson =
+      String(req.query.format || "").toLowerCase() === "json" ||
+      String(req.headers.accept || "").includes("application/json");
+    const message = `Faltam credenciais globais do app OAuth do Google: ${missing.join(", ")}.`;
+    if (wantsJson) {
+      return res.status(400).json({ error: message, missing });
+    }
+    return res
+      .status(400)
+      .send(
+        renderSimpleHtmlPage(
+          "Google OAuth indisponivel",
+          `<p>${escapeHtml(message)}</p>
+           <div class="box">
+             <strong>O que configurar no ambiente</strong>
+             <pre><code>GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=</code></pre>
+           </div>
+           <div class="box">
+             <strong>Redirect URI local sugerida</strong>
+             <p><code>http://localhost:3000/api/google/oauth/callback</code></p>
+           </div>`,
+        ),
+      );
   }
+  const clienteId = trimEnv(String(req.query.cliente_id || ""));
+  const returnTo = trimEnv(String(req.query.return_to || "/"));
+  const state = createSignedState({
+    clienteId,
+    returnTo,
+    createdAt: Date.now(),
+  });
 
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.searchParams.set("client_id", config.googleClientId);
@@ -2506,16 +3625,33 @@ app.get("/api/google/oauth/start", (req, res) => {
   url.searchParams.set("prompt", "consent");
   url.searchParams.set("include_granted_scopes", "true");
   url.searchParams.set("scope", "https://www.googleapis.com/auth/drive");
+  url.searchParams.set("state", state);
 
   res.redirect(url.toString());
+});
+
+app.get("/api/google/oauth/status", async (_req, res) => {
+  const config = getRuntimeConfig();
+  const missing = [
+    !config.googleClientId ? "GOOGLE_CLIENT_ID" : "",
+    !config.googleClientSecret ? "GOOGLE_CLIENT_SECRET" : "",
+    !config.googleRedirectUri ? "GOOGLE_REDIRECT_URI" : "",
+  ].filter(Boolean);
+  res.json({
+    ready: missing.length === 0,
+    missing,
+    redirectUri: config.googleRedirectUri,
+  });
 });
 
 app.get("/api/google/oauth/callback", async (req, res) => {
   try {
     const config = getRuntimeConfig();
     const code = trimEnv(String(req.query.code || ""));
+    const rawState = trimEnv(String(req.query.state || ""));
+    const state = parseSignedState<{ clienteId?: string; returnTo?: string; createdAt?: number }>(rawState);
     if (!code) {
-      return res.status(400).json({ error: "Parâmetro code ausente." });
+      return res.status(400).json({ error: "ParÃ¢metro code ausente." });
     }
     if (!config.googleClientId || !config.googleClientSecret || !config.googleRedirectUri) {
       return res.status(400).json({ error: "Credenciais OAuth do Google incompletas." });
@@ -2548,6 +3684,64 @@ app.get("/api/google/oauth/callback", async (req, res) => {
     };
 
     const refreshToken = tokens.refresh_token || "";
+    let googleAccountEmail = "";
+    if (tokens.access_token) {
+      try {
+        const profileResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+          headers: {
+            Authorization: `Bearer ${tokens.access_token}`,
+          },
+        });
+        if (profileResponse.ok) {
+          const profile = (await profileResponse.json()) as { email?: string };
+          googleAccountEmail = trimEnv(profile.email);
+        }
+      } catch {
+        googleAccountEmail = "";
+      }
+    }
+
+    if (state?.clienteId) {
+      await ensureClienteSetup(state.clienteId);
+      if (refreshToken) {
+        await upsertClienteConfiguracao(state.clienteId, {
+          chave: "GOOGLE_REFRESH_TOKEN",
+          valor: null,
+          valor_encrypted: refreshToken,
+          tipo: "SECRET",
+          categoria: "INTEGRACAO",
+          descricao: "Refresh token da conta Google conectada ao cliente.",
+          sensivel: true,
+          editavel_por_cliente: false,
+          usar_padrao_sistema: false,
+        });
+      }
+      if (googleAccountEmail) {
+        await upsertClienteConfiguracao(state.clienteId, {
+          chave: "GOOGLE_OAUTH_ACCOUNT_EMAIL",
+          valor: googleAccountEmail,
+          valor_encrypted: null,
+          tipo: "STRING",
+          categoria: "INTEGRACAO",
+          descricao: "Conta Google conectada ao cliente.",
+          sensivel: false,
+          editavel_por_cliente: false,
+          usar_padrao_sistema: false,
+        });
+      }
+      await upsertClienteConfiguracao(state.clienteId, {
+        chave: "GOOGLE_OAUTH_CONNECTED_AT",
+        valor: new Date().toISOString(),
+        valor_encrypted: null,
+        tipo: "STRING",
+        categoria: "INTEGRACAO",
+        descricao: "Data da ultima conexao Google do cliente.",
+        sensivel: false,
+        editavel_por_cliente: false,
+        usar_padrao_sistema: false,
+      });
+    }
+
     const envSnippet = [
       `GOOGLE_CLIENT_ID=${config.googleClientId}`,
       `GOOGLE_CLIENT_SECRET=${config.googleClientSecret}`,
@@ -2558,13 +3752,23 @@ app.get("/api/google/oauth/callback", async (req, res) => {
 
     const payload = {
       success: true,
-      message: refreshToken
-        ? "Callback Google concluído. Salve o refresh_token nas variáveis de ambiente."
-        : "Callback Google concluído, mas o Google não retornou refresh_token. Revogue o acesso do app e repita com prompt=consent.",
+      message: state?.clienteId
+        ? refreshToken
+          ? "Conta Google conectada ao cliente com sucesso."
+          : "O login Google concluiu, mas o refresh_token nao foi retornado. Revogue o acesso e repita a conexao."
+        : refreshToken
+          ? "Callback Google concluÃ­do. Salve o refresh_token nas variÃ¡veis de ambiente."
+          : "Callback Google concluÃ­do, mas o Google nÃ£o retornou refresh_token. Revogue o acesso do app e repita com prompt=consent.",
       refreshToken,
+      googleAccountEmail,
+      clienteId: state?.clienteId || "",
       envSnippet,
       tokens,
     };
+    const popupMessage = JSON.stringify({
+      type: "instaflow-google-oauth",
+      ...payload,
+    }).replace(/</g, "\\u003c");
 
     const wantsJson =
       String(req.query.format || "").toLowerCase() === "json" ||
@@ -2579,7 +3783,7 @@ app.get("/api/google/oauth/callback", async (req, res) => {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Google OAuth concluído</title>
+    <title>Google OAuth concluÃ­do</title>
     <style>
       body { font-family: Arial, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 32px; }
       main { max-width: 820px; margin: 0 auto; background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 24px; }
@@ -2593,8 +3797,10 @@ app.get("/api/google/oauth/callback", async (req, res) => {
   </head>
   <body>
     <main>
-      <h1 class="${refreshToken ? "ok" : "warn"}">Google OAuth concluído</h1>
+      <h1 class="${refreshToken ? "ok" : "warn"}">Google OAuth concluÃ­do</h1>
       <p>${escapeHtml(payload.message)}</p>
+      ${state?.clienteId ? `<div class="box"><strong>Cliente</strong><p>${escapeHtml(state.clienteId)}</p></div>` : ""}
+      ${googleAccountEmail ? `<div class="box"><strong>Conta Google</strong><p>${escapeHtml(googleAccountEmail)}</p></div>` : ""}
       <div class="box">
         <strong>Refresh token</strong>
         <pre><code>${escapeHtml(refreshToken || "NAO_RECEBIDO")}</code></pre>
@@ -2604,10 +3810,20 @@ app.get("/api/google/oauth/callback", async (req, res) => {
         <pre><code>${escapeHtml(envSnippet)}</code></pre>
       </div>
       <div class="box">
-        <strong>Observação</strong>
-        <p>Se o refresh token vier vazio, revogue o acesso do app Google autorizado anteriormente e repita o fluxo para forçar uma nova concessão offline.</p>
+        <strong>ObservaÃ§Ã£o</strong>
+        <p>Se o refresh token vier vazio, revogue o acesso do app Google autorizado anteriormente e repita o fluxo para forÃ§ar uma nova concessÃ£o offline.</p>
       </div>
     </main>
+    <script>
+      try {
+        if (window.opener) {
+          window.opener.postMessage(${popupMessage}, window.location.origin);
+          window.close();
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    </script>
   </body>
 </html>`);
   } catch (error) {
@@ -2619,7 +3835,8 @@ app.post("/api/google/import", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanCreatePosts(actingUser);
-    const imported = await importGoogleDrivePosts(actingUser.nome);
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const imported = await importGoogleDrivePosts(actingUser.nome, clienteId);
     res.json({
       success: true,
       importedCount: imported.length,
@@ -2633,7 +3850,7 @@ app.post("/api/google/import", async (req, res) => {
 app.get("/api/meta/oauth/start", (_req, res) => {
   const config = getRuntimeConfig();
   if (!config.metaAppId || !config.metaRedirectUri) {
-    return res.status(400).json({ error: "META_APP_ID e META_REDIRECT_URI são obrigatórios." });
+    return res.status(400).json({ error: "META_APP_ID e META_REDIRECT_URI sÃ£o obrigatÃ³rios." });
   }
 
   const url = new URL(`https://www.facebook.com/${config.graphApiVersion}/dialog/oauth`);
@@ -2652,7 +3869,7 @@ app.get("/api/meta/oauth/callback", async (req, res) => {
     const config = getRuntimeConfig();
     const code = trimEnv(String(req.query.code || ""));
     if (!code) {
-      return res.status(400).json({ error: "Parâmetro code ausente." });
+      return res.status(400).json({ error: "ParÃ¢metro code ausente." });
     }
     if (!config.metaAppId || !config.metaAppSecret || !config.metaRedirectUri) {
       return res.status(400).json({ error: "Credenciais OAuth da Meta incompletas." });
@@ -2690,7 +3907,7 @@ app.get("/api/meta/oauth/callback", async (req, res) => {
 
     res.json({
       success: true,
-      message: "Callback Meta concluído. Salve os valores abaixo no ambiente da aplicação.",
+      message: "Callback Meta concluÃ­do. Salve os valores abaixo no ambiente da aplicaÃ§Ã£o.",
       accessToken: longLived.access_token,
       facebookPageId: pageId,
       instagramBusinessId,
@@ -2724,23 +3941,25 @@ app.post("/api/simulate-tick", async (req, res) => {
     const processedCount = await runScheduledPublications();
     res.json({ success: true, processedCount });
   } catch (error) {
-    respondWithError(res, error, "Scheduler", "Falha ao processar publicações agendadas.");
+    respondWithError(res, error, "Scheduler", "Falha ao processar publicaÃ§Ãµes agendadas.");
   }
 });
 
 app.get("/api/history", async (req, res) => {
   try {
     await getActingUserFromRequest(req);
-    res.json({ history: await listHistory() });
+    const clienteId = await resolveClienteIdFromRequest(req);
+    res.json({ history: await listHistory(clienteId), clienteId });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao listar histórico.");
+    respondWithError(res, error, "Database", "Falha ao listar histÃ³rico.");
   }
 });
 
 app.get("/api/logs", async (req, res) => {
   try {
     await getActingUserFromRequest(req);
-    res.json({ logs: await listLogs() });
+    const clienteId = await resolveClienteIdFromRequest(req);
+    res.json({ logs: await listLogs(clienteId), clienteId });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar logs.");
   }
@@ -2749,8 +3968,9 @@ app.get("/api/logs", async (req, res) => {
 app.post("/api/logs/clear", async (req, res) => {
   try {
     await getActingUserFromRequest(req);
-    await clearLogRecords();
-    await addLog("Database", "info", "Logs limpos pelo painel.");
+    const clienteId = await resolveClienteIdFromRequest(req);
+    await clearLogRecords(clienteId);
+    await addLog("Database", "info", "Logs limpos pelo painel.", undefined, clienteId);
     res.json({ success: true });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao limpar logs.");
@@ -2761,7 +3981,388 @@ app.get("/api/public-config", (_req, res) => {
   try {
     res.json({ config: getPublicRuntimeConfig() });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao carregar configuração pública.", 500);
+    respondWithError(res, error, "Database", "Falha ao carregar configuraÃ§Ã£o pÃºblica.", 500);
+  }
+});
+
+app.get("/api/admin/dashboard", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+
+    const clientes = await listClientes();
+    const posts = await listPosts();
+    const logs = await listLogs();
+    const history = await listHistory();
+
+    const clientesAtivos = clientes.filter((cliente) => cliente.status === "ATIVO").length;
+    const postsPendentes = posts.filter((post) => post.status === "PENDENTE" || post.status === "PENDENTE_APROVACAO").length;
+    const publicacoesMes = posts.filter((post) => {
+      const baseDate = post.data_publicacao || post.criado_em;
+      if (!baseDate) return false;
+      const date = new Date(baseDate);
+      const now = new Date();
+      return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear() && /PUBLICAD|AGENDAD/.test(post.status);
+    }).length;
+    const erros24h = logs.filter((log) => {
+      const created = new Date(log.timestamp);
+      return log.type === "error" && Date.now() - created.getTime() <= 24 * 60 * 60 * 1000;
+    }).length;
+    const integracoesComProblema = (await listParametroAuditoria()).filter((item) => item.acao === "TESTADO").length > 0 ? 0 : 0;
+
+    const atividadeRecente = history.slice(0, 10).map((item) => ({
+      cliente_id: item.cliente_id || null,
+      cliente_nome: clientes.find((cliente) => cliente.id === item.cliente_id)?.nome || "Cliente",
+      conteudo: item.post_titulo || item.observacao || item.acao,
+      status: item.acao.includes("Aprov") ? "APROVADO" : item.acao.includes("Rejeit") ? "REJEITADO" : "PENDENTE_APROVACAO",
+      data: item.criado_em,
+    }));
+
+    res.json({
+      clientes_ativos: clientesAtivos,
+      posts_pendentes: postsPendentes,
+      publicacoes_mes: publicacoesMes,
+      taxa_sucesso: logs.length ? Math.max(0, Math.min(100, 100 - (erros24h / logs.length) * 100)) : 100,
+      erros_24h: erros24h,
+      integracoes_com_problema: integracoesComProblema,
+      atividade_recente: atividadeRecente,
+    });
+  } catch (error) {
+    respondWithError(res, error, "Database", "Falha ao carregar dashboard global.");
+  }
+});
+
+app.get("/api/admin/clientes", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+    res.json({ clientes: await listClientes() });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao listar clientes.");
+  }
+});
+
+app.get("/api/clientes", async (req, res) => {
+  try {
+    await getActingUserFromRequest(req);
+    const clientes = await listClientes();
+    res.json({ clientes });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao listar clientes.");
+  }
+});
+
+app.get("/api/clientes/:clienteId", async (req, res) => {
+  try {
+    await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) {
+      return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    }
+    res.json({ cliente });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao buscar cliente.");
+  }
+});
+
+app.patch("/api/clientes/:clienteId", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    if (!canEditClientSettings(actingUser)) {
+      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para editar dados do cliente.");
+    }
+
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) {
+      return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    }
+
+    const payload: Cliente = {
+      ...cliente,
+      nome: req.body.nome !== undefined ? trimEnv(String(req.body.nome)) : cliente.nome,
+      slug: req.body.slug !== undefined ? trimEnv(String(req.body.slug)).toLowerCase() : cliente.slug,
+      status: req.body.status ? (normalizeStatusValue(String(req.body.status)) as Cliente["status"]) : cliente.status,
+      logo_url: req.body.logo_url !== undefined ? (req.body.logo_url ? String(req.body.logo_url) : null) : cliente.logo_url || null,
+      cor_primaria: req.body.cor_primaria !== undefined ? (req.body.cor_primaria ? String(req.body.cor_primaria) : null) : cliente.cor_primaria || null,
+      cor_secundaria: req.body.cor_secundaria !== undefined ? (req.body.cor_secundaria ? String(req.body.cor_secundaria) : null) : cliente.cor_secundaria || null,
+      atualizado_em: new Date().toISOString(),
+    };
+
+    if (!(await canUseSupabase())) {
+      const index = memoryStore.clientes.findIndex((item) => item.id === cliente.id);
+      if (index >= 0) memoryStore.clientes[index] = payload;
+      await addLog("Clientes", "info", `Cliente '${payload.nome}' atualizado.`, { clienteId: payload.id }, payload.id);
+      return res.json({ success: true, cliente: payload });
+    }
+
+    const updated = await supabaseRequest<Cliente[]>(`clientes?id=eq.${sanitizeId(cliente.id)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(payload),
+    });
+
+    const clienteAtualizado = updated[0] || payload;
+    await addLog("Clientes", "info", `Cliente '${clienteAtualizado.nome}' atualizado.`, { clienteId: clienteAtualizado.id }, clienteAtualizado.id);
+    res.json({ success: true, cliente: clienteAtualizado });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao atualizar cliente.");
+  }
+});
+
+app.post("/api/clientes", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    if (!canEditClientSettings(actingUser)) {
+      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para editar integraÃ§Ãµes do cliente.");
+    }
+    const nome = trimEnv(req.body.nome);
+    const slug = trimEnv(req.body.slug).toLowerCase();
+    if (!nome || !slug) {
+      return res.status(400).json({ error: "Nome e slug sÃ£o obrigatÃ³rios." });
+    }
+
+    const now = new Date().toISOString();
+    const payload: Cliente = {
+      id: randomUUID(),
+      nome,
+      slug,
+      status: normalizeStatusValue(req.body.status) === "INATIVO" ? "INATIVO" : normalizeStatusValue(req.body.status) === "SUSPENSO" ? "SUSPENSO" : "ATIVO",
+      logo_url: req.body.logo_url || null,
+      cor_primaria: req.body.cor_primaria || null,
+      cor_secundaria: req.body.cor_secundaria || null,
+      criado_em: now,
+      atualizado_em: now,
+    };
+
+    if (!(await canUseSupabase())) {
+      memoryStore.clientes.unshift(payload);
+      await ensureClienteSetup(payload.id);
+      await addLog("Clientes", "success", `Cliente '${payload.nome}' criado em modo local.`, { clienteId: payload.id });
+      return res.status(201).json({ success: true, cliente: payload });
+    }
+
+    const created = await supabaseRequest<Cliente[]>("clientes", {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(payload),
+    });
+
+    const cliente = created[0];
+    await ensureClienteSetup(cliente.id);
+    await addLog("Clientes", "success", `Cliente '${cliente.nome}' criado.`, { clienteId: cliente.id }, cliente.id);
+    res.status(201).json({ success: true, cliente });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao criar cliente.");
+  }
+});
+
+app.get("/api/clientes/:clienteId/integracoes", async (req, res) => {
+  try {
+    await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) {
+      return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    }
+
+    if (!(await canUseSupabase())) {
+      const local = { cliente_id: cliente.id, modo_operacao: "SIMULADOR" } as ClienteIntegracao;
+      return res.json({ integracao: local });
+    }
+
+    const records = await supabaseRequest<ClienteIntegracao[]>(
+      `cliente_integracoes?cliente_id=eq.${sanitizeId(cliente.id)}&select=*`,
+    );
+    res.json({ integracao: records[0] || { cliente_id: cliente.id, modo_operacao: "SIMULADOR" } });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao buscar integraÃ§Ãµes do cliente.");
+  }
+});
+
+app.patch("/api/clientes/:clienteId/integracoes", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    if (!canEditClientSettings(actingUser)) {
+      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para editar integraÃ§Ãµes do cliente.");
+    }
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) {
+      return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    }
+
+    const payload: Partial<ClienteIntegracao> & { cliente_id: string } = {
+      cliente_id: cliente.id,
+      google_drive_folder_id: req.body.google_drive_folder_id ?? null,
+      google_drive_imagens_folder_id: req.body.google_drive_imagens_folder_id ?? null,
+      google_drive_videos_folder_id: req.body.google_drive_videos_folder_id ?? null,
+      google_drive_publicados_folder_id: req.body.google_drive_publicados_folder_id ?? null,
+      instagram_access_token: req.body.instagram_access_token ?? null,
+      instagram_user_id: req.body.instagram_user_id ?? null,
+      instagram_business_id: req.body.instagram_business_id ?? null,
+      facebook_page_id: req.body.facebook_page_id ?? null,
+      graph_api_version: req.body.graph_api_version ?? "v23.0",
+      modo_operacao: req.body.modo_operacao === "REAL" ? "REAL" : "SIMULADOR",
+      atualizado_em: new Date().toISOString(),
+      criado_em: new Date().toISOString(),
+    };
+
+    if (!(await canUseSupabase())) {
+      const current = memoryStore.clientes.findIndex((item) => item.id === cliente.id);
+      if (current === -1) {
+        return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+      }
+      await addLog("Clientes", "info", "IntegraÃ§Ãµes do cliente atualizadas em modo local.", { clienteId: cliente.id }, cliente.id);
+      return res.json({ success: true, integracao: payload });
+    }
+
+    const existing = await supabaseRequest<ClienteIntegracao[]>(
+      `cliente_integracoes?cliente_id=eq.${sanitizeId(cliente.id)}&select=*`,
+    );
+    const result = existing.length
+      ? await supabaseRequest<ClienteIntegracao[]>(
+          `cliente_integracoes?cliente_id=eq.${sanitizeId(cliente.id)}`,
+          {
+            method: "PATCH",
+            headers: { Prefer: "return=representation" },
+            body: JSON.stringify(payload),
+          },
+        )
+      : await supabaseRequest<ClienteIntegracao[]>("cliente_integracoes", {
+          method: "POST",
+          headers: { Prefer: "return=representation" },
+          body: JSON.stringify(payload),
+        });
+
+    await addLog("Clientes", "info", "IntegraÃ§Ãµes do cliente atualizadas.", { clienteId: cliente.id }, cliente.id);
+    res.json({ success: true, integracao: result[0] || payload });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao atualizar integraÃ§Ãµes do cliente.");
+  }
+});
+
+app.get("/api/clientes/:clienteId/usuarios", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    if (actingUser.perfil_publicacao !== "SUPER_ADMIN" && actingUser.perfil_publicacao !== "ADMIN_CLIENTE" && actingUser.perfil_publicacao !== "ADMIN") {
+      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para visualizar usuÃ¡rios do cliente.");
+    }
+
+    const memberships = await listClienteUsuarios(cliente.id);
+    const users = await listUsers();
+    const items = memberships.map((membership) => {
+      const user = users.find((item) => item.id === membership.usuario_id);
+      return {
+        usuario_id: membership.usuario_id,
+        nome: user?.nome || "UsuÃ¡rio",
+        email: user?.email || "",
+        perfil: membership.perfil,
+        status: membership.status,
+        ultima_atividade: user?.criado_em || membership.criado_em,
+      };
+    });
+
+    res.json({ items, total: items.length });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao listar usuÃ¡rios do cliente.");
+  }
+});
+
+app.post("/api/clientes/:clienteId/usuarios/convites", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    if (actingUser.perfil_publicacao !== "SUPER_ADMIN" && actingUser.perfil_publicacao !== "ADMIN_CLIENTE" && actingUser.perfil_publicacao !== "ADMIN") {
+      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para convidar usuÃ¡rios do cliente.");
+    }
+
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+
+    const nome = trimEnv(String(req.body.nome || ""));
+    const email = trimEnv(String(req.body.email || "")).toLowerCase();
+    const perfil = inferPerfilPublicacaoFromRawValue(req.body.perfil || "CRIADOR");
+    if (!nome || !email) return res.status(400).json({ error: "Nome e e-mail sÃ£o obrigatÃ³rios." });
+
+    const users = await listUsers();
+    let user = users.find((item) => item.email.toLowerCase() === email);
+    if (!user) {
+      user = await createOperationalUserRecord({
+        nome,
+        email,
+        perfil_publicacao: perfil,
+        ativo: false,
+      });
+    }
+
+    const membership = await upsertClienteUsuario(cliente.id, {
+      usuario_id: user.id,
+      perfil: perfil === "SUPER_ADMIN" ? "ADMIN_CLIENTE" : perfil === "ADMIN" ? "ADMIN_CLIENTE" : (perfil as ClienteUsuario["perfil"]),
+      status: "ATIVO",
+    });
+
+    await addLog("Clientes", "success", `UsuÃ¡rio '${user.email}' vinculado ao cliente '${cliente.nome}'.`, { clienteId: cliente.id, usuarioId: user.id }, cliente.id);
+    res.status(201).json({ success: true, membership, user });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao convidar usuÃ¡rio do cliente.");
+  }
+});
+
+app.patch("/api/clientes/:clienteId/usuarios/:usuarioId", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    if (actingUser.perfil_publicacao !== "SUPER_ADMIN" && actingUser.perfil_publicacao !== "ADMIN_CLIENTE" && actingUser.perfil_publicacao !== "ADMIN") {
+      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para editar usuÃ¡rios do cliente.");
+    }
+
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+
+    const memberships = await listClienteUsuarios(cliente.id);
+    const membership = memberships.find((item) => item.usuario_id === req.params.usuarioId);
+    if (!membership) return res.status(404).json({ error: "VÃ­nculo do usuÃ¡rio nÃ£o encontrado." });
+
+    const updated = await upsertClienteUsuario(cliente.id, {
+      usuario_id: req.params.usuarioId,
+      perfil: req.body.perfil || membership.perfil,
+      status: req.body.status || membership.status,
+    });
+
+    if (req.body.ativo !== undefined) {
+      await updateUserRecord(req.params.usuarioId, { ativo: Boolean(req.body.ativo) });
+    }
+
+    await addLog("Clientes", "info", `UsuÃ¡rio do cliente '${cliente.nome}' atualizado.`, { clienteId: cliente.id, usuarioId: req.params.usuarioId }, cliente.id);
+    res.json({ success: true, membership: updated });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao atualizar usuÃ¡rio do cliente.");
+  }
+});
+
+app.delete("/api/clientes/:clienteId/usuarios/:usuarioId", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    if (actingUser.perfil_publicacao !== "SUPER_ADMIN" && actingUser.perfil_publicacao !== "ADMIN_CLIENTE" && actingUser.perfil_publicacao !== "ADMIN") {
+      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para remover usuÃ¡rios do cliente.");
+    }
+
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+
+    if (!(await canUseSupabase())) {
+      memoryStore.clienteUsuarios = memoryStore.clienteUsuarios.filter(
+        (item) => !(item.cliente_id === cliente.id && item.usuario_id === req.params.usuarioId),
+      );
+    } else {
+      await supabaseRequest<unknown>(
+        `cliente_usuarios?cliente_id=eq.${sanitizeId(cliente.id)}&usuario_id=eq.${sanitizeId(req.params.usuarioId)}`,
+        { method: "DELETE" },
+      );
+    }
+
+    await addLog("Clientes", "warn", `UsuÃ¡rio removido do cliente '${cliente.nome}'.`, { clienteId: cliente.id, usuarioId: req.params.usuarioId }, cliente.id);
+    res.json({ success: true });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao remover usuÃ¡rio do cliente.");
   }
 });
 
@@ -2769,24 +4370,378 @@ app.get("/api/auth/me", async (req, res) => {
   try {
     res.json({ user: await getActingUserFromRequest(req) });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao validar usuário autenticado.", 401);
+    respondWithError(res, error, "Database", "Falha ao validar usuÃ¡rio autenticado.", 401);
   }
 });
 
 app.get("/api/settings", async (req, res) => {
   try {
     await getActingUserFromRequest(req);
-    res.json({ settings: await getSettingsView() });
+    const clienteId = await resolveClienteIdFromRequest(req);
+    res.json({ settings: await getSettingsView(clienteId), clienteId });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao ler estado das integrações.");
+    respondWithError(res, error, "Database", "Falha ao ler estado das integraÃ§Ãµes.");
   }
 });
 
 app.post("/api/settings", (_req, res) => {
   res.status(405).json({
     success: false,
-    error: "As integrações agora são configuradas exclusivamente por variáveis de ambiente no backend.",
+    error: "Use as rotas de cliente e as tabelas do Supabase para configurar cada cliente. O endpoint legado de settings foi descontinuado.",
   });
+});
+
+app.get("/api/admin/configuracoes/sistema", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+    const items = await listSistemaConfiguracoes();
+    res.json({ items });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao carregar configuraÃ§Ãµes do sistema.");
+  }
+});
+
+app.patch("/api/admin/configuracoes/sistema", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+    const updated: SistemaConfiguracao[] = [];
+
+    for (const item of items) {
+      if (!item?.chave) continue;
+      const saved = await upsertSistemaConfiguracao({
+        chave: String(item.chave),
+        valor: item.valor ?? null,
+        valor_encrypted: item.valor_encrypted ?? null,
+        tipo: item.tipo ?? "STRING",
+        categoria: item.categoria ?? "GERAL",
+        descricao: item.descricao ?? null,
+        sensivel: Boolean(item.sensivel),
+        editavel: item.editavel !== undefined ? Boolean(item.editavel) : true,
+      });
+      updated.push(saved);
+      await createParametroAuditoria({
+        escopo: "SISTEMA",
+        usuario_id: actingUser.id,
+        chave: saved.chave,
+        categoria: saved.categoria,
+        valor_anterior_mascarado: "",
+        valor_novo_mascarado: saved.sensivel ? maskSecretValue(saved.valor_encrypted || saved.valor) : stringifyConfigValue(saved.valor),
+        acao: "ALTERADO",
+        origem: "WEBAPP",
+      });
+    }
+
+    res.json({ success: true, items: updated });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao atualizar configuraÃ§Ãµes do sistema.");
+  }
+});
+
+app.post("/api/admin/configuracoes/sistema/testar", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+    await createParametroAuditoria({
+      escopo: "SISTEMA",
+      usuario_id: actingUser.id,
+      chave: "TESTE_CONFIGURACAO_SISTEMA",
+      categoria: "GERAL",
+      valor_anterior_mascarado: null,
+      valor_novo_mascarado: "OK",
+      acao: "TESTADO",
+      origem: "WEBAPP",
+    });
+    res.json({ success: true, message: "ConfiguraÃ§Ã£o do sistema testada com sucesso." });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao testar configuraÃ§Ã£o do sistema.");
+  }
+});
+
+app.get("/api/clientes/:clienteId/configuracoes", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    await ensureClienteSetup(cliente.id);
+    const configs = await listClienteConfiguracoes(cliente.id);
+    const integracoes = await getClienteIntegracao(cliente.id);
+    const auditoria = await listParametroAuditoria(cliente.id);
+    res.json({ cliente, configuracoes: configs, integracoes, auditoria, user: actingUser });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao carregar configuraÃ§Ãµes do cliente.");
+  }
+});
+
+app.patch("/api/clientes/:clienteId/configuracoes", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    if (!canEditClientSettings(actingUser)) {
+      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para alterar configuraÃ§Ãµes do cliente.");
+    }
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+    const updated: ClienteConfiguracao[] = [];
+
+    for (const item of items) {
+      if (!item?.chave) continue;
+      const saved = await upsertClienteConfiguracao(cliente.id, {
+        chave: String(item.chave),
+        valor: item.valor ?? null,
+        valor_encrypted: item.valor_encrypted ?? null,
+        tipo: item.tipo ?? "STRING",
+        categoria: item.categoria ?? "GERAL",
+        descricao: item.descricao ?? null,
+        sensivel: Boolean(item.sensivel),
+        editavel_por_cliente: Boolean(item.editavel_por_cliente),
+        usar_padrao_sistema: Boolean(item.usar_padrao_sistema),
+      });
+      updated.push(saved);
+      await createParametroAuditoria({
+        escopo: "CLIENTE",
+        cliente_id: cliente.id,
+        usuario_id: actingUser.id,
+        chave: saved.chave,
+        categoria: saved.categoria,
+        valor_anterior_mascarado: "",
+        valor_novo_mascarado: saved.sensivel ? maskSecretValue(saved.valor_encrypted || saved.valor) : stringifyConfigValue(saved.valor),
+        acao: "ALTERADO",
+        origem: "WEBAPP",
+      });
+    }
+
+    res.json({ success: true, items: updated });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao atualizar configuraÃ§Ãµes do cliente.");
+  }
+});
+
+app.get("/api/clientes/:clienteId/ia/configuracao", async (req, res) => {
+  try {
+    await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const configs = await listClienteConfiguracoes(cliente.id);
+    const items = configs.filter((config) => config.categoria === "IA");
+    res.json({ items });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao carregar configuraÃ§Ã£o de IA.");
+  }
+});
+
+app.patch("/api/clientes/:clienteId/ia/configuracao", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+    const updated: ClienteConfiguracao[] = [];
+    for (const item of items) {
+      if (!item?.chave) continue;
+      const saved = await upsertClienteConfiguracao(cliente.id, {
+        chave: String(item.chave),
+        valor: item.valor ?? null,
+        valor_encrypted: item.valor_encrypted ?? null,
+        tipo: item.tipo ?? "STRING",
+        categoria: "IA",
+        descricao: item.descricao ?? null,
+        sensivel: Boolean(item.sensivel),
+        editavel_por_cliente: Boolean(item.editavel_por_cliente),
+        usar_padrao_sistema: Boolean(item.usar_padrao_sistema),
+      });
+      updated.push(saved);
+      await createParametroAuditoria({
+        escopo: "IA",
+        cliente_id: cliente.id,
+        usuario_id: actingUser.id,
+        chave: saved.chave,
+        categoria: "IA",
+        valor_anterior_mascarado: "",
+        valor_novo_mascarado: saved.sensivel ? maskSecretValue(saved.valor_encrypted || saved.valor) : stringifyConfigValue(saved.valor),
+        acao: "ALTERADO",
+        origem: "WEBAPP",
+      });
+    }
+    res.json({ success: true, items: updated });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao atualizar configuraÃ§Ã£o de IA.");
+  }
+});
+
+app.post("/api/clientes/:clienteId/ia/testar", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const context = await getClienteOperationalContext(cliente.id);
+    if (!context.aiConfigured) {
+      throw new HttpError(400, "Cliente sem chave de IA configurada.");
+    }
+    await createParametroAuditoria({
+      escopo: "IA",
+      cliente_id: cliente.id,
+      usuario_id: actingUser.id,
+      chave: "IA_TESTE",
+      categoria: "IA",
+      valor_anterior_mascarado: null,
+      valor_novo_mascarado: "OK",
+      acao: "TESTADO",
+      origem: "WEBAPP",
+    });
+    res.json({
+      success: true,
+      message: `IA do cliente pronta para uso com ${context.aiProvider} / ${context.aiModel}.`,
+      provider: context.aiProvider,
+      model: context.aiModel,
+    });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao testar IA do cliente.");
+  }
+});
+
+app.get("/api/clientes/:clienteId/regras-aprovacao", async (req, res) => {
+  try {
+    await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const configs = await listClienteConfiguracoes(cliente.id);
+    const items = configs.filter((config) => config.categoria === "APROVACAO");
+    res.json({ items });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao carregar regras de aprovaÃ§Ã£o.");
+  }
+});
+
+app.patch("/api/clientes/:clienteId/regras-aprovacao", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+    const updated: ClienteConfiguracao[] = [];
+    for (const item of items) {
+      if (!item?.chave) continue;
+      const saved = await upsertClienteConfiguracao(cliente.id, {
+        chave: String(item.chave),
+        valor: item.valor ?? null,
+        valor_encrypted: item.valor_encrypted ?? null,
+        tipo: item.tipo ?? "STRING",
+        categoria: "APROVACAO",
+        descricao: item.descricao ?? null,
+        sensivel: Boolean(item.sensivel),
+        editavel_por_cliente: Boolean(item.editavel_por_cliente),
+        usar_padrao_sistema: Boolean(item.usar_padrao_sistema),
+      });
+      updated.push(saved);
+      await createParametroAuditoria({
+        escopo: "APROVACAO",
+        cliente_id: cliente.id,
+        usuario_id: actingUser.id,
+        chave: saved.chave,
+        categoria: "APROVACAO",
+        valor_anterior_mascarado: "",
+        valor_novo_mascarado: stringifyConfigValue(saved.valor),
+        acao: "ALTERADO",
+        origem: "WEBAPP",
+      });
+    }
+    res.json({ success: true, items: updated });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao atualizar regras de aprovaÃ§Ã£o.");
+  }
+});
+
+app.get("/api/admin/logs/parametros", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+    res.json({ items: await listParametroAuditoria() });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao carregar auditoria de parametros.");
+  }
+});
+
+app.get("/api/clientes/:clienteId/logs/parametros", async (req, res) => {
+  try {
+    await getActingUserFromRequest(req);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    res.json({ items: await listParametroAuditoria(cliente.id) });
+  } catch (error) {
+    respondWithError(res, error, "Clientes", "Falha ao carregar auditoria do cliente.");
+  }
+});
+
+app.post("/api/clientes/:clienteId/integracoes/google-drive/testar", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    if (!canEditClientSettings(actingUser)) {
+      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para testar integraÃ§Ãµes.");
+    }
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const integracao = await getClienteIntegracao(cliente.id);
+    const folderId =
+      trimEnv(req.body?.google_drive_folder_id) ||
+      trimEnv(integracao?.google_drive_folder_id) ||
+      trimEnv(getRuntimeConfig().googleDriveFolderId);
+    const folder = await testDriveFolderAccessForClient(cliente.id, folderId);
+    await createParametroAuditoria({
+      escopo: "INTEGRACAO",
+      cliente_id: cliente.id,
+      usuario_id: actingUser.id,
+      chave: "GOOGLE_DRIVE_TESTE",
+      categoria: "INTEGRACAO",
+      valor_anterior_mascarado: null,
+      valor_novo_mascarado: folder.id,
+      acao: "TESTADO",
+      origem: "WEBAPP",
+    });
+    res.json({ success: true, message: `Conexão com a pasta '${folder.name}' validada com sucesso.`, folder });
+  } catch (error) {
+    respondWithError(res, error, "Google Drive", "Falha ao testar Google Drive.");
+  }
+});
+
+app.post("/api/clientes/:clienteId/integracoes/meta/testar", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    if (!canEditClientSettings(actingUser)) {
+      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para testar integraÃ§Ãµes.");
+    }
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const context = await getClienteOperationalContext(cliente.id);
+    if (!context.instagramConfigured) {
+      throw new HttpError(400, "Cliente sem token ou identificador Instagram/Meta configurado.");
+    }
+    const actorId = getInstagramPublishingActorId(context);
+    const actor = await instagramGraphRequest<{ id?: string; username?: string; name?: string }>(
+      context,
+      `/${actorId}?fields=id,username,name&access_token=${encodeURIComponent(context.instagramAccessToken)}`,
+    );
+    await createParametroAuditoria({
+      escopo: "INTEGRACAO",
+      cliente_id: cliente.id,
+      usuario_id: actingUser.id,
+      chave: "META_TESTE",
+      categoria: "INTEGRACAO",
+      valor_anterior_mascarado: null,
+      valor_novo_mascarado: actor.id || actorId,
+      acao: "TESTADO",
+      origem: "WEBAPP",
+    });
+    res.json({
+      success: true,
+      message: `Conexao Meta validada para ${actor.username || actor.name || actor.id || actorId}.`,
+      actor,
+    });
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao testar Meta.");
+  }
 });
 
 app.get("/api/users", async (req, res) => {
@@ -2795,7 +4750,7 @@ app.get("/api/users", async (req, res) => {
     assertIsAdmin(actingUser);
     res.json({ users: await listUsers() });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao listar usuários.");
+    respondWithError(res, error, "Database", "Falha ao listar usuÃ¡rios.");
   }
 });
 
@@ -2811,24 +4766,24 @@ app.post("/api/users", async (req, res) => {
     const ativo = req.body.ativo === undefined ? true : Boolean(req.body.ativo);
 
     if (!nome) {
-      return res.status(400).json({ error: "Nome é obrigatório." });
+      return res.status(400).json({ error: "Nome Ã© obrigatÃ³rio." });
     }
     if (!email) {
-      return res.status(400).json({ error: "E-mail é obrigatório." });
+      return res.status(400).json({ error: "E-mail Ã© obrigatÃ³rio." });
     }
     if (!password || password.length < 6) {
-      return res.status(400).json({ error: "Senha provisória deve ter ao menos 6 caracteres." });
+      return res.status(400).json({ error: "Senha provisÃ³ria deve ter ao menos 6 caracteres." });
     }
 
     const existingUsers = await listUsers();
     if (existingUsers.some((user) => user.email.toLowerCase() === email)) {
-      return res.status(409).json({ error: "Já existe usuário operacional cadastrado com este e-mail." });
+      return res.status(409).json({ error: "JÃ¡ existe usuÃ¡rio operacional cadastrado com este e-mail." });
     }
 
     const roleColumnAvailable = await hasUsuariosRoleColumn();
     if (!roleColumnAvailable && perfilPublicacao === "APROVADOR") {
       return res.status(400).json({
-        error: "A tabela usuarios ainda não possui a coluna perfil_publicacao. Neste ambiente só é possível usar Administrador ou Criador.",
+        error: "A tabela usuarios ainda nÃ£o possui a coluna perfil_publicacao. Neste ambiente sÃ³ Ã© possÃ­vel usar Administrador ou Criador.",
       });
     }
 
@@ -2863,7 +4818,7 @@ app.post("/api/users", async (req, res) => {
       auth_user_id: authUserId,
     });
 
-    await addLog("Database", "success", `Usuário '${created.email}' criado pelo painel.`, {
+    await addLog("Database", "success", `UsuÃ¡rio '${created.email}' criado pelo painel.`, {
       userId: created.id,
       authUserId,
       perfil_publicacao: created.perfil_publicacao,
@@ -2873,7 +4828,7 @@ app.post("/api/users", async (req, res) => {
 
     res.status(201).json({ success: true, user: created, linkedExistingAuthUser });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao criar usuário.");
+    respondWithError(res, error, "Database", "Falha ao criar usuÃ¡rio.");
   }
 });
 
@@ -2884,7 +4839,7 @@ app.put("/api/users/:id", async (req, res) => {
     const users = await listUsers();
     const existingUser = users.find((user) => user.id === req.params.id);
     if (!existingUser) {
-      throw new HttpError(404, "Usuário não encontrado.");
+      throw new HttpError(404, "UsuÃ¡rio nÃ£o encontrado.");
     }
 
     const roleColumnAvailable = await hasUsuariosRoleColumn();
@@ -2894,18 +4849,18 @@ app.put("/api/users/:id", async (req, res) => {
     if (!roleColumnAvailable && perfilPublicacao === "APROVADOR") {
       throw new HttpError(
         400,
-        "A tabela usuarios ainda não possui a coluna perfil_publicacao. Neste ambiente só é possível usar Administrador ou Criador.",
+        "A tabela usuarios ainda nÃ£o possui a coluna perfil_publicacao. Neste ambiente sÃ³ Ã© possÃ­vel usar Administrador ou Criador.",
       );
     }
 
     const nextEmail = trimEnv(req.body.email || existingUser.email).toLowerCase();
     if (!nextEmail) {
-      throw new HttpError(400, "E-mail é obrigatório.");
+      throw new HttpError(400, "E-mail Ã© obrigatÃ³rio.");
     }
 
     const duplicatedEmail = users.find((user) => user.id !== req.params.id && user.email.toLowerCase() === nextEmail);
     if (duplicatedEmail) {
-      throw new HttpError(409, "Já existe outro usuário com este e-mail.");
+      throw new HttpError(409, "JÃ¡ existe outro usuÃ¡rio com este e-mail.");
     }
 
     if (existingUser.auth_user_id && (nextEmail !== existingUser.email.toLowerCase() || req.body.nome !== undefined)) {
@@ -2923,7 +4878,7 @@ app.put("/api/users/:id", async (req, res) => {
       perfil: perfilPublicacao ? (perfilPublicacao === "ADMIN" ? "ADMIN" : "OPERADOR") : req.body.perfil,
     });
 
-    await addLog("Database", "info", `Usuário '${updated.email}' atualizado.`, {
+    await addLog("Database", "info", `UsuÃ¡rio '${updated.email}' atualizado.`, {
       userId: updated.id,
       perfil_publicacao: updated.perfil_publicacao,
       ativo: updated.ativo,
@@ -2931,7 +4886,7 @@ app.put("/api/users/:id", async (req, res) => {
 
     res.json({ success: true, user: updated });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao atualizar usuário.");
+    respondWithError(res, error, "Database", "Falha ao atualizar usuÃ¡rio.");
   }
 });
 
@@ -2943,11 +4898,11 @@ app.delete("/api/users/:id", async (req, res) => {
     const users = await listUsers();
     const target = users.find((user) => user.id === req.params.id);
     if (!target) {
-      return res.status(404).json({ error: "Usuário não encontrado." });
+      return res.status(404).json({ error: "UsuÃ¡rio nÃ£o encontrado." });
     }
 
     if (target.email.toLowerCase() === actingUser.email.toLowerCase()) {
-      return res.status(400).json({ error: "Não é permitido excluir o próprio usuário administrador em uso." });
+      return res.status(400).json({ error: "NÃ£o Ã© permitido excluir o prÃ³prio usuÃ¡rio administrador em uso." });
     }
 
     if (target.auth_user_id) {
@@ -2956,17 +4911,17 @@ app.delete("/api/users/:id", async (req, res) => {
 
     const deleted = await deleteOperationalUserRecord(req.params.id);
     if (!deleted) {
-      return res.status(404).json({ error: "Usuário não encontrado." });
+      return res.status(404).json({ error: "UsuÃ¡rio nÃ£o encontrado." });
     }
 
-    await addLog("Database", "warn", `Usuário '${deleted.email}' excluído do painel.`, {
+    await addLog("Database", "warn", `UsuÃ¡rio '${deleted.email}' excluÃ­do do painel.`, {
       userId: deleted.id,
       authUserId: deleted.auth_user_id,
     });
 
     res.json({ success: true, user: deleted });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao excluir usuário.");
+    respondWithError(res, error, "Database", "Falha ao excluir usuÃ¡rio.");
   }
 });
 
@@ -2983,11 +4938,11 @@ app.post("/api/users/:id/reset-password", async (req, res) => {
     const users = await listUsers();
     const target = users.find((user) => user.id === req.params.id);
     if (!target) {
-      return res.status(404).json({ error: "Usuário não encontrado." });
+      return res.status(404).json({ error: "UsuÃ¡rio nÃ£o encontrado." });
     }
 
     if (!target.auth_user_id) {
-      return res.status(400).json({ error: "Este usuário não possui vínculo com Supabase Auth para redefinição de senha." });
+      return res.status(400).json({ error: "Este usuÃ¡rio nÃ£o possui vÃ­nculo com Supabase Auth para redefiniÃ§Ã£o de senha." });
     }
 
     await updateSupabaseAuthUser(target.auth_user_id, {
@@ -2996,14 +4951,14 @@ app.post("/api/users/:id/reset-password", async (req, res) => {
       password: newPassword,
     });
 
-    await addLog("Database", "info", `Senha do usuário '${target.email}' redefinida pelo painel.`, {
+    await addLog("Database", "info", `Senha do usuÃ¡rio '${target.email}' redefinida pelo painel.`, {
       userId: target.id,
       authUserId: target.auth_user_id,
     });
 
     res.json({ success: true });
   } catch (error) {
-    respondWithError(res, error, "Database", "Falha ao redefinir senha do usuário.");
+    respondWithError(res, error, "Database", "Falha ao redefinir senha do usuÃ¡rio.");
   }
 });
 
@@ -3013,16 +4968,22 @@ app.post("/api/gemini/generate-caption", async (req, res) => {
 
   try {
     await getActingUserFromRequest(req);
-    const ai = getGeminiClient();
+    const clienteId = await resolveClienteIdFromRequest(req);
+    const context = await getClienteOperationalContext(clienteId);
+    if (context.aiProvider !== "GEMINI") {
+      throw new HttpError(400, `O cliente atual estÃ¡ configurado com ${context.aiProvider}. A geraÃ§Ã£o automÃ¡tica implementada no backend usa Gemini no momento.`);
+    }
+    const ai = getGeminiClientWithKey(context.aiApiKey || trimEnv(process.env.GEMINI_API_KEY));
     await addLog("Gemini AI", "info", "Gerando legenda com Gemini.", {
       title,
       prompt,
       type,
-      model: getRuntimeConfig().geminiModel,
+      model: context.aiModel,
+      clienteId,
     });
 
     const response = await ai.models.generateContent({
-      model: getRuntimeConfig().geminiModel,
+      model: context.aiModel,
       contents: `Gere uma legenda engajadora para Instagram.
 Titulo: "${title}"
 Contexto: "${prompt || "Sem contexto adicional"}"
@@ -3058,7 +5019,7 @@ Use exatamente ${count} hashtags.`,
 
     res.json({
       success: true,
-      legenda: `${title}\n\n${prompt || "Conteúdo preparado para revisão e publicação no Instagram."}`,
+      legenda: `${title}\n\n${prompt || "ConteÃºdo preparado para revisÃ£o e publicaÃ§Ã£o no Instagram."}`,
       hashtags: fallbackHashtags,
       isFallback: true,
     });
@@ -3087,7 +5048,7 @@ export async function initializeApp(options?: { enableStatic?: boolean }) {
   try {
     await listUsers();
   } catch (error) {
-    await addLog("Database", "warn", "Falha ao validar base de usuários durante o bootstrap.", {
+    await addLog("Database", "warn", "Falha ao validar base de usuÃ¡rios durante o bootstrap.", {
       error: maskError(error),
     });
   }
@@ -3114,3 +5075,8 @@ export async function initializeApp(options?: { enableStatic?: boolean }) {
 }
 
 export default app;
+
+
+
+
+

@@ -1,4 +1,4 @@
-export type PerfilPublicacao = 'CRIADOR' | 'APROVADOR' | 'ADMIN';
+export type PerfilPublicacao = 'SUPER_ADMIN' | 'ADMIN' | 'ADMIN_CLIENTE' | 'APROVADOR' | 'CRIADOR' | 'VISUALIZADOR';
 
 export interface Usuario {
   id: string; // UUID or string
@@ -11,7 +11,105 @@ export interface Usuario {
   criado_em: string;
 }
 
-export type PostStatus = 'RASCUNHO' | 'PENDENTE' | 'APROVADA' | 'REJEITADA' | 'AGENDADA' | 'PUBLICADA' | 'ERRO';
+export interface Cliente {
+  id: string;
+  nome: string;
+  slug: string;
+  status: 'ATIVO' | 'INATIVO' | 'SUSPENSO';
+  logo_url?: string | null;
+  cor_primaria?: string | null;
+  cor_secundaria?: string | null;
+  criado_em: string;
+  atualizado_em: string;
+}
+
+export interface ClienteUsuario {
+  id: string;
+  cliente_id: string;
+  usuario_id: string;
+  perfil: 'SUPER_ADMIN' | 'ADMIN_CLIENTE' | 'CRIADOR' | 'APROVADOR' | 'VISUALIZADOR';
+  status: 'ATIVO' | 'INATIVO';
+  criado_em: string;
+}
+
+export interface ClienteIntegracao {
+  id: string;
+  cliente_id: string;
+  google_drive_folder_id?: string | null;
+  google_drive_imagens_folder_id?: string | null;
+  google_drive_videos_folder_id?: string | null;
+  google_drive_publicados_folder_id?: string | null;
+  instagram_access_token?: string | null;
+  instagram_user_id?: string | null;
+  instagram_business_id?: string | null;
+  facebook_page_id?: string | null;
+  graph_api_version?: string | null;
+  modo_operacao?: 'SIMULADOR' | 'REAL';
+  criado_em: string;
+  atualizado_em: string;
+}
+
+export interface SistemaConfiguracao {
+  id: string;
+  chave: string;
+  valor?: string | null;
+  valor_encrypted?: string | null;
+  tipo: 'STRING' | 'NUMBER' | 'BOOLEAN' | 'JSON' | 'SECRET';
+  categoria: string;
+  descricao?: string | null;
+  sensivel: boolean;
+  editavel: boolean;
+  criado_em: string;
+  atualizado_em: string;
+}
+
+export interface ClienteConfiguracao {
+  id: string;
+  cliente_id: string;
+  chave: string;
+  valor?: string | null;
+  valor_encrypted?: string | null;
+  tipo: 'STRING' | 'NUMBER' | 'BOOLEAN' | 'JSON' | 'SECRET';
+  categoria: string;
+  descricao?: string | null;
+  sensivel: boolean;
+  editavel_por_cliente: boolean;
+  usar_padrao_sistema: boolean;
+  criado_em: string;
+  atualizado_em: string;
+}
+
+export interface ParametroAuditoria {
+  id: string;
+  escopo: 'SISTEMA' | 'CLIENTE' | 'INTEGRACAO' | 'IA' | 'APROVACAO';
+  cliente_id?: string | null;
+  usuario_id?: string | null;
+  chave: string;
+  categoria?: string | null;
+  valor_anterior_mascarado?: string | null;
+  valor_novo_mascarado?: string | null;
+  acao: 'CRIADO' | 'ALTERADO' | 'REMOVIDO' | 'TESTADO';
+  origem?: string | null;
+  ip?: string | null;
+  user_agent?: string | null;
+  criado_em: string;
+}
+
+export type PostStatus =
+  | 'RASCUNHO'
+  | 'PENDENTE'
+  | 'PENDENTE_APROVACAO'
+  | 'APROVADA'
+  | 'APROVADO'
+  | 'REJEITADA'
+  | 'REJEITADO'
+  | 'AGENDADA'
+  | 'AGENDADO'
+  | 'PUBLICADA'
+  | 'PUBLICADO'
+  | 'ERRO'
+  | 'ERRO_PUBLICACAO'
+  | 'CANCELADO';
 export type MediaValidationStatus = 'VALID' | 'VALID_WITH_WARNINGS' | 'INVALID';
 
 export interface MediaValidationIssue {
@@ -45,6 +143,7 @@ export interface VideoEditMetadata {
 
 export interface Post {
   id: string; // UUID
+  cliente_id?: string | null;
   titulo: string;
   legenda: string;
   tipo: 'IMAGEM' | 'VIDEO' | 'REELS';
@@ -80,6 +179,7 @@ export interface Post {
 
 export interface HistoricoPost {
   id: string;
+  cliente_id?: string | null;
   post_id: string;
   post_titulo?: string;
   usuario: string; // Name of person who did the action
@@ -110,10 +210,22 @@ export interface SettingsConfig {
   missingEnv: string[];
 }
 
+export interface SystemSettingsView {
+  items: SistemaConfiguracao[];
+}
+
+export interface ClientSettingsView {
+  cliente: Cliente;
+  configuracoes: ClienteConfiguracao[];
+  integracoes: ClienteIntegracao | null;
+  auditoria: ParametroAuditoria[];
+}
+
 export interface LogMessage {
   id: string;
+  cliente_id?: string | null;
   timestamp: string;
-  service: 'Google Drive' | 'Instagram API' | 'Scheduler' | 'Gemini AI' | 'Database';
+  service: 'Google Drive' | 'Instagram API' | 'Scheduler' | 'Gemini AI' | 'Database' | 'Clientes';
   type: 'info' | 'success' | 'warn' | 'error';
   message: string;
   payload?: string;

@@ -4,7 +4,18 @@ import dotenv from "dotenv";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 
-const requiredTables = ["posts", "usuarios", "historico_posts", "logs"];
+const requiredTables = [
+  "clientes",
+  "cliente_usuarios",
+  "cliente_integracoes",
+  "sistema_configuracoes",
+  "cliente_configuracoes",
+  "parametro_auditoria",
+  "posts",
+  "usuarios",
+  "historico_posts",
+  "logs",
+];
 const supabaseUrl = process.env.SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 

@@ -1,15 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import Dashboard from './components/Dashboard';
+import AdminDashboard from './components/AdminDashboard';
 import CreatePost from './components/CreatePost';
 import ApproveList from './components/ApproveList';
 import HistoryList from './components/HistoryList';
+import ClientsManagement from './components/ClientsManagement';
+import ClientUsersManagement from './components/ClientUsersManagement';
 import SettingsSync from './components/SettingsSync';
 import SimulatorLogs from './components/SimulatorLogs';
 import LoginScreen from './components/LoginScreen';
-import UsersManagement from './components/UsersManagement';
-import { PerfilPublicacao, Usuario } from './types';
+import { Cliente, PerfilPublicacao, Usuario } from './types';
 import { apiFetch } from './lib/api';
 import { getSupabaseClient } from './lib/supabase';
+import { LOGOS, PLATFORM_NAME } from './lib/branding';
+import { getStoredActiveClient, getStoredActiveClientId, setStoredActiveClient } from './lib/client-store';
 import {
   LayoutDashboard,
   PlusCircle,
@@ -20,6 +24,7 @@ import {
   ChevronDown,
   LogOut,
   Users,
+  Building2,
 } from 'lucide-react';
 
 function getRole(user: Usuario | null): PerfilPublicacao {
@@ -28,8 +33,11 @@ function getRole(user: Usuario | null): PerfilPublicacao {
 }
 
 function getRoleLabel(role: PerfilPublicacao) {
+  if (role === 'SUPER_ADMIN') return 'Super Admin';
   if (role === 'ADMIN') return 'Administrador';
+  if (role === 'ADMIN_CLIENTE') return 'Admin do Cliente';
   if (role === 'APROVADOR') return 'Aprovador';
+  if (role === 'VISUALIZADOR') return 'Visualizador';
   return 'Criador';
 }
 
@@ -39,12 +47,41 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [profileDropdown, setProfileDropdown] = useState(false);
   const [pendingBadge, setPendingBadge] = useState<number>(0);
+  const [availableClients, setAvailableClients] = useState<Cliente[]>([]);
+  const [activeClient, setActiveClient] = useState<Cliente | null>(getStoredActiveClient());
 
   const currentRole = getRole(currentUser);
-  const canCreate = currentRole === 'CRIADOR' || currentRole === 'ADMIN';
-  const canApprove = currentRole === 'APROVADOR' || currentRole === 'ADMIN';
-  const canManageUsers = currentRole === 'ADMIN';
-  const mobileNavColumns = 4 + Number(canCreate) + Number(canApprove) + Number(canManageUsers);
+  const canCreate = currentRole === 'CRIADOR' || currentRole === 'ADMIN' || currentRole === 'ADMIN_CLIENTE';
+  const canApprove = currentRole === 'APROVADOR' || currentRole === 'ADMIN' || currentRole === 'ADMIN_CLIENTE';
+  const canManageUsers = currentRole === 'ADMIN' || currentRole === 'SUPER_ADMIN' || currentRole === 'ADMIN_CLIENTE';
+  const canEditSettings = currentRole === 'SUPER_ADMIN' || currentRole === 'ADMIN' || currentRole === 'ADMIN_CLIENTE';
+  const isSuperAdmin = currentRole === 'SUPER_ADMIN';
+  const canSeeClients = isSuperAdmin;
+  const mobileNavColumns = 4 + Number(canSeeClients) + Number(canCreate) + Number(canApprove) + Number(canManageUsers);
+
+  const loadClients = async () => {
+    try {
+      const res = await apiFetch('/api/clientes');
+      const data = await res.json();
+      const clients = (data.clientes || []) as Cliente[];
+      setAvailableClients(clients);
+
+      if (!clients.length) {
+        setActiveClient(null);
+        setStoredActiveClient(null);
+        return;
+      }
+
+      const storedId = getStoredActiveClientId();
+      const storedMatch = clients.find((client) => client.id === storedId);
+      const fallbackClient = getStoredActiveClient();
+      const nextClient = storedMatch || clients.find((client) => client.id === fallbackClient?.id) || clients[0];
+      setActiveClient(nextClient);
+      setStoredActiveClient(nextClient);
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const loadCurrentUser = async () => {
     const res = await apiFetch('/api/auth/me');
@@ -81,6 +118,13 @@ export default function App() {
     }
   };
 
+  const handleClientChange = (clientId: string) => {
+    const nextClient = availableClients.find((client) => client.id === clientId) || null;
+    setActiveClient(nextClient);
+    setStoredActiveClient(nextClient);
+    setPendingBadge(0);
+  };
+
   useEffect(() => {
     let active = true;
     let unsubscribe = () => undefined;
@@ -94,6 +138,7 @@ export default function App() {
 
         if (session) {
           await loadCurrentUser();
+          await loadClients();
         }
 
         const subscription = supabase.auth.onAuthStateChange((_event, nextSession) => {
@@ -111,6 +156,7 @@ export default function App() {
             console.error(err);
             setCurrentUser(null);
           });
+          void loadClients().catch((err) => console.error(err));
         });
 
         unsubscribe = () => subscription.data.subscription.unsubscribe();
@@ -147,6 +193,7 @@ export default function App() {
 
   const handleLogin = async () => {
     await loadCurrentUser();
+    await loadClients();
   };
 
   const handleLogout = async () => {
@@ -155,6 +202,8 @@ export default function App() {
     setCurrentUser(null);
     setProfileDropdown(false);
     setCurrentScreen('dashboard');
+    setActiveClient(null);
+    setStoredActiveClient(null);
   };
 
   if (authLoading) {
@@ -172,7 +221,28 @@ export default function App() {
   const renderActiveScreen = () => {
     switch (currentScreen) {
       case 'dashboard':
-        return <Dashboard onNavigate={(screen) => setCurrentScreen(screen)} onSimulateTick={handleSimulateTick} />;
+        return isSuperAdmin ? (
+          <AdminDashboard onNavigate={(screen) => setCurrentScreen(screen)} />
+        ) : (
+          <Dashboard onNavigate={(screen) => setCurrentScreen(screen)} onSimulateTick={handleSimulateTick} />
+        );
+      case 'clientes':
+        if (!isSuperAdmin) {
+          return (
+            <div className="my-10 mx-auto max-w-xl rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+              <h3 className="text-base font-bold text-slate-800">Acesso restrito</h3>
+              <p className="mt-2 text-xs leading-relaxed text-slate-500">A lista de clientes é exclusiva do super admin.</p>
+            </div>
+          );
+        }
+        return (
+          <ClientsManagement
+            onSelectClient={(client) => {
+              handleClientChange(client.id);
+              setCurrentScreen('config');
+            }}
+          />
+        );
       case 'criar':
         if (!canCreate) {
           return (
@@ -215,9 +285,24 @@ export default function App() {
       case 'historico':
         return <HistoryList />;
       case 'config':
-        return <SettingsSync onSettingsSaved={fetchBadgeCount} />;
+        return (
+          <SettingsSync
+            activeClient={activeClient}
+            availableClients={availableClients}
+            onSelectClient={(client) => handleClientChange(client.id)}
+            onSettingsSaved={fetchBadgeCount}
+          />
+        );
       case 'usuarios':
-        if (!canManageUsers) {
+        if (!activeClient) {
+          return (
+            <div className="my-10 mx-auto max-w-xl rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+              <h3 className="text-base font-bold text-slate-800">Selecione um cliente</h3>
+              <p className="mt-2 text-xs leading-relaxed text-slate-500">Os usuários são gerenciados dentro do contexto do cliente ativo.</p>
+            </div>
+          );
+        }
+        if (!(canManageUsers || isSuperAdmin)) {
           return (
             <div className="my-10 mx-auto max-w-xl rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
               <h3 className="text-base font-bold text-slate-800">Acesso restrito</h3>
@@ -227,7 +312,7 @@ export default function App() {
             </div>
           );
         }
-        return <UsersManagement onUsersChanged={loadCurrentUser} />;
+        return <ClientUsersManagement activeClient={activeClient} />;
       case 'logs':
         return (
           <div className="space-y-6">
@@ -245,9 +330,11 @@ export default function App() {
 
   const pageTitle =
     currentScreen === 'dashboard'
-      ? 'Dashboard'
+      ? (isSuperAdmin ? 'Visão Global' : 'Dashboard')
       : currentScreen === 'criar'
         ? 'Criar Postagem'
+        : currentScreen === 'clientes'
+          ? 'Clientes'
         : currentScreen === 'aprovacao'
           ? 'Moderação'
           : currentScreen === 'historico'
@@ -262,11 +349,11 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans text-slate-800">
       <aside className="hidden md:flex w-64 bg-brand-dark text-slate-300 flex-col shrink-0 border-r border-brand-darker/60 h-screen sticky top-0 z-30">
         <div className="p-6 flex items-center gap-3 border-b border-brand-darker/40 shrink-0">
-          <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center bg-brand-primary shadow-md shrink-0 border border-brand-primary/30">
-            <img src="https://i.imgur.com/c5XQ7TW.jpeg" className="w-full h-full object-cover" alt="Logo" referrerPolicy="no-referrer" />
-          </div>
-          <div className="overflow-hidden">
-            <span className="text-white font-bold text-base tracking-tight block">InstaFlow</span>
+            <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center bg-brand-primary shadow-md shrink-0 border border-brand-primary/30">
+              <img src={LOGOS.squareMark} className="w-full h-full object-contain p-0.5" alt="Logo" referrerPolicy="no-referrer" />
+            </div>
+            <div className="overflow-hidden">
+            <span className="text-white font-bold text-base tracking-tight block">{PLATFORM_NAME}</span>
             <span className="text-[10px] text-brand-primary font-medium block truncate">Instagram Control Center</span>
           </div>
         </div>
@@ -279,8 +366,20 @@ export default function App() {
             }`}
           >
             <LayoutDashboard className="w-4 h-4 shrink-0" />
-            <span>Dashboard</span>
+            <span>{isSuperAdmin ? 'Visão Global' : 'Dashboard'}</span>
           </button>
+
+          {canSeeClients && (
+            <button
+              onClick={() => setCurrentScreen('clientes')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
+                currentScreen === 'clientes' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Building2 className="w-4 h-4 shrink-0" />
+              <span>Clientes</span>
+            </button>
+          )}
 
           {canCreate && (
             <button
@@ -323,15 +422,17 @@ export default function App() {
             <span>Histórico</span>
           </button>
 
-          <button
-            onClick={() => setCurrentScreen('config')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
-              currentScreen === 'config' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <Settings className="w-4 h-4 shrink-0" />
-            <span>Parâmetros</span>
-          </button>
+          {canEditSettings && (
+            <button
+              onClick={() => setCurrentScreen('config')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
+                currentScreen === 'config' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Settings className="w-4 h-4 shrink-0" />
+              <span>Parâmetros</span>
+            </button>
+          )}
 
           {canManageUsers && (
             <button
@@ -400,10 +501,10 @@ export default function App() {
             <div className="min-w-0 flex items-center gap-3">
               <div className="flex min-w-0 md:hidden items-center gap-2.5 cursor-pointer" onClick={() => setCurrentScreen('dashboard')}>
                 <div className="w-8 h-8 rounded-lg overflow-hidden bg-brand-primary flex items-center justify-center shadow-sm shrink-0">
-                  <img src="https://i.imgur.com/c5XQ7TW.jpeg" className="w-full h-full object-cover" alt="Logo" referrerPolicy="no-referrer" />
+                  <img src={LOGOS.squareMark} className="w-full h-full object-contain p-0.5" alt="Logo" referrerPolicy="no-referrer" />
                 </div>
                 <div className="min-w-0">
-                  <span className="block truncate font-bold text-sm text-slate-850 tracking-tight">InstaFlow</span>
+                  <span className="block truncate font-bold text-sm text-slate-850 tracking-tight">{PLATFORM_NAME}</span>
                   <span className="block truncate text-[10px] text-slate-400">{pageTitle}</span>
                 </div>
               </div>
@@ -424,6 +525,26 @@ export default function App() {
                 <span className="w-2 h-2 rounded-full bg-brand-secondary animate-pulse shrink-0"></span>
                 <span className="truncate">{currentUser.nome}</span>
               </div>
+
+              {availableClients.length > 0 && (
+                <div className="hidden lg:flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+                  <Building2 className="h-4 w-4 text-brand-secondary" />
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Cliente ativo</p>
+                    <select
+                      value={activeClient?.id || ''}
+                      onChange={(event) => handleClientChange(event.target.value)}
+                      className="min-w-[220px] bg-transparent text-xs font-semibold text-slate-800 outline-none"
+                    >
+                      {availableClients.map((client) => (
+                        <option key={client.id} value={client.id}>
+                          {client.nome}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
 
               <div className="md:hidden relative">
                 <button
@@ -462,9 +583,22 @@ export default function App() {
             }`}
             style={{ minHeight: '48px' }}
           >
-            <LayoutDashboard className="w-5 h-5 mb-0.5" />
-            <span>Painel</span>
+              <LayoutDashboard className="w-5 h-5 mb-0.5" />
+            <span>{isSuperAdmin ? 'Global' : 'Painel'}</span>
           </button>
+
+          {canSeeClients && (
+            <button
+              onClick={() => setCurrentScreen('clientes')}
+              className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+                currentScreen === 'clientes' ? 'text-brand-secondary' : 'text-slate-450'
+              }`}
+              style={{ minHeight: '48px' }}
+            >
+              <Building2 className="w-5 h-5 mb-0.5" />
+              <span>Clientes</span>
+            </button>
+          )}
 
           {canCreate && (
             <button
@@ -508,16 +642,18 @@ export default function App() {
             <span>Histórico</span>
           </button>
 
-          <button
-            onClick={() => setCurrentScreen('config')}
-            className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
-              currentScreen === 'config' ? 'text-brand-secondary' : 'text-slate-450'
-            }`}
-            style={{ minHeight: '48px' }}
-          >
-            <Settings className="w-5 h-5 mb-0.5" />
-            <span>Params</span>
-          </button>
+          {canEditSettings && (
+            <button
+              onClick={() => setCurrentScreen('config')}
+              className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
+                currentScreen === 'config' ? 'text-brand-secondary' : 'text-slate-450'
+              }`}
+              style={{ minHeight: '48px' }}
+            >
+              <Settings className="w-5 h-5 mb-0.5" />
+              <span>Params</span>
+            </button>
+          )}
 
           {canManageUsers && (
             <button

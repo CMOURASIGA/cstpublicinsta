@@ -2,6 +2,12 @@ interface PublicRuntimeConfig {
   appUrl: string;
   supabaseUrl: string;
   supabaseAnonKey: string;
+  platformName: string;
+  logos: {
+    squareText: string;
+    squareMark: string;
+    wideText: string;
+  };
 }
 
 let runtimeConfigPromise: Promise<PublicRuntimeConfig> | null = null;
