@@ -38,17 +38,102 @@ create table if not exists cliente_integracoes (
   id uuid primary key default gen_random_uuid(),
   cliente_id uuid not null references clientes(id) on delete cascade unique,
   google_drive_folder_id text,
+  google_drive_entrada_folder_id text,
+  google_drive_aprovacao_folder_id text,
+  google_drive_aprovados_folder_id text,
   google_drive_imagens_folder_id text,
   google_drive_videos_folder_id text,
   google_drive_publicados_folder_id text,
+  google_drive_rejeitados_folder_id text,
+  google_drive_arquivados_folder_id text,
+  google_account_email text,
+  google_drive_access_token_encrypted text,
+  google_drive_refresh_token_encrypted text,
+  google_drive_token_expires_at timestamptz,
+  google_drive_status text default 'NAO_CONECTADO',
+  google_drive_last_sync_at timestamptz,
+  google_drive_last_error text,
+  instagram_username text,
   instagram_access_token text,
+  instagram_access_token_encrypted text,
+  instagram_token_status text default 'NAO_CONFIGURADO',
+  instagram_token_expires_at timestamptz,
+  instagram_connected_at timestamptz,
+  instagram_last_sync_at timestamptz,
+  instagram_connection_mode text default 'INSTAGRAM_LOGIN',
+  instagram_webhook_enabled boolean default false,
   instagram_user_id text,
   instagram_business_id text,
+  instagram_media_actor_id text,
   facebook_page_id text,
   graph_api_version text default 'v23.0',
   modo_operacao text not null default 'SIMULADOR' check (modo_operacao in ('SIMULADOR', 'REAL')),
   criado_em timestamptz not null default now(),
   atualizado_em timestamptz not null default now()
+);
+
+create table if not exists cliente_drive_arquivos (
+  id uuid primary key default gen_random_uuid(),
+  cliente_id uuid not null references clientes(id) on delete cascade,
+  post_id uuid,
+  drive_file_id text not null unique,
+  drive_folder_id text,
+  drive_file_name text,
+  drive_mime_type text,
+  drive_web_view_link text,
+  storage_bucket text,
+  storage_path text,
+  storage_public_url text,
+  size_bytes bigint,
+  width integer,
+  height integer,
+  duration_seconds numeric,
+  origem text not null default 'GOOGLE_DRIVE',
+  status text not null default 'IMPORTADO',
+  raw_payload jsonb,
+  criado_em timestamptz not null default now(),
+  atualizado_em timestamptz not null default now()
+);
+
+create table if not exists google_drive_oauth_states (
+  id uuid primary key default gen_random_uuid(),
+  state text not null unique,
+  cliente_id uuid not null references clientes(id) on delete cascade,
+  usuario_id uuid references usuarios(id) on delete set null,
+  redirect_after_success text,
+  expires_at timestamptz not null,
+  used_at timestamptz,
+  criado_em timestamptz not null default now()
+);
+
+create table if not exists instagram_oauth_states (
+  id uuid primary key default gen_random_uuid(),
+  state text not null unique,
+  cliente_id uuid not null references clientes(id) on delete cascade,
+  usuario_id uuid references usuarios(id) on delete set null,
+  provider text not null default 'INSTAGRAM_LOGIN',
+  redirect_after_success text,
+  expires_at timestamptz not null,
+  used_at timestamptz,
+  criado_em timestamptz not null default now()
+);
+
+create table if not exists post_insights_resumo (
+  id uuid primary key default gen_random_uuid(),
+  cliente_id uuid not null references clientes(id) on delete cascade,
+  post_id uuid not null references posts(id) on delete cascade,
+  instagram_media_id text not null,
+  views numeric default 0,
+  reach numeric default 0,
+  likes numeric default 0,
+  comments numeric default 0,
+  shares numeric default 0,
+  saved numeric default 0,
+  total_interactions numeric default 0,
+  engagement_rate numeric default 0,
+  last_sync_at timestamptz,
+  raw_payload jsonb,
+  unique (post_id)
 );
 
 create table if not exists sistema_configuracoes (
@@ -158,6 +243,32 @@ create table if not exists logs (
 alter table if exists posts add column if not exists cliente_id uuid references clientes(id);
 alter table if exists historico_posts add column if not exists cliente_id uuid references clientes(id);
 alter table if exists logs add column if not exists cliente_id uuid references clientes(id);
+alter table if exists cliente_integracoes add column if not exists google_drive_entrada_folder_id text;
+alter table if exists cliente_integracoes add column if not exists google_drive_aprovacao_folder_id text;
+alter table if exists cliente_integracoes add column if not exists google_drive_aprovados_folder_id text;
+alter table if exists cliente_integracoes add column if not exists google_drive_rejeitados_folder_id text;
+alter table if exists cliente_integracoes add column if not exists google_drive_arquivados_folder_id text;
+alter table if exists cliente_integracoes add column if not exists google_account_email text;
+alter table if exists cliente_integracoes add column if not exists google_drive_access_token_encrypted text;
+alter table if exists cliente_integracoes add column if not exists google_drive_refresh_token_encrypted text;
+alter table if exists cliente_integracoes add column if not exists google_drive_token_expires_at timestamptz;
+alter table if exists cliente_integracoes add column if not exists google_drive_status text default 'NAO_CONECTADO';
+alter table if exists cliente_integracoes add column if not exists google_drive_last_sync_at timestamptz;
+alter table if exists cliente_integracoes add column if not exists google_drive_last_error text;
+alter table if exists cliente_integracoes add column if not exists instagram_username text;
+alter table if exists cliente_integracoes add column if not exists instagram_access_token_encrypted text;
+alter table if exists cliente_integracoes add column if not exists instagram_token_status text default 'NAO_CONFIGURADO';
+alter table if exists cliente_integracoes add column if not exists instagram_token_expires_at timestamptz;
+alter table if exists cliente_integracoes add column if not exists instagram_connected_at timestamptz;
+alter table if exists cliente_integracoes add column if not exists instagram_last_sync_at timestamptz;
+alter table if exists cliente_integracoes add column if not exists instagram_connection_mode text default 'INSTAGRAM_LOGIN';
+alter table if exists cliente_integracoes add column if not exists instagram_webhook_enabled boolean default false;
+alter table if exists cliente_integracoes add column if not exists instagram_media_actor_id text;
+alter table if exists posts add column if not exists instagram_media_id text;
+alter table if exists posts add column if not exists instagram_permalink text;
+alter table if exists posts add column if not exists instagram_published_at timestamptz;
+alter table if exists posts add column if not exists instagram_publish_status text;
+alter table if exists posts add column if not exists instagram_publish_error text;
 
 create index if not exists idx_posts_cliente_id on posts(cliente_id);
 create index if not exists idx_posts_cliente_status on posts(cliente_id, status);
@@ -172,6 +283,13 @@ create index if not exists idx_parametro_auditoria_chave on parametro_auditoria(
 create index if not exists idx_parametro_auditoria_criado_em on parametro_auditoria(criado_em);
 create index if not exists idx_usuarios_email on usuarios(email);
 create index if not exists idx_usuarios_auth_user_id on usuarios(auth_user_id);
+create index if not exists idx_cliente_drive_arquivos_cliente_id on cliente_drive_arquivos(cliente_id);
+create index if not exists idx_cliente_drive_arquivos_post_id on cliente_drive_arquivos(post_id);
+create index if not exists idx_google_drive_oauth_states_cliente_id on google_drive_oauth_states(cliente_id);
+create index if not exists idx_google_drive_oauth_states_state on google_drive_oauth_states(state);
+create index if not exists idx_instagram_oauth_states_cliente_id on instagram_oauth_states(cliente_id);
+create index if not exists idx_instagram_oauth_states_state on instagram_oauth_states(state);
+create index if not exists idx_post_insights_resumo_cliente_id on post_insights_resumo(cliente_id);
 
 insert into clientes (nome, slug, status)
 values ('Cliente Inicial', 'cliente-inicial', 'ATIVO')

@@ -238,6 +238,14 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
     cor_secundaria: '#0060ac',
   });
   const [integrations, setIntegrations] = useState<Partial<ClienteIntegracao>>({});
+  const [instagramManual, setInstagramManual] = useState({
+    instagram_username: '',
+    instagram_user_id: '',
+    instagram_business_id: '',
+    instagram_access_token: '',
+    instagram_connection_mode: 'MANUAL_TEST_TOKEN' as NonNullable<ClienteIntegracao['instagram_connection_mode']>,
+    instagram_token_status: 'ATIVO_TESTE' as NonNullable<ClienteIntegracao['instagram_token_status']>,
+  });
   const [audits, setAudits] = useState<ParametroAuditoria[]>([]);
   const [systemAudits, setSystemAudits] = useState<ParametroAuditoria[]>([]);
 
@@ -273,11 +281,17 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
   const integrationConfigItems = useMemo(() => clientItems.filter((item) => item.categoria === 'INTEGRACAO'), [clientItems]);
   const googleConnectedEmail = String(integrationConfigItems.find((item) => item.chave === 'GOOGLE_OAUTH_ACCOUNT_EMAIL')?.valor || '');
   const googleConnectedAt = String(integrationConfigItems.find((item) => item.chave === 'GOOGLE_OAUTH_CONNECTED_AT')?.valor || '');
+  const googleDriveStatus = String(
+    integrationConfigItems.find((item) => item.chave === 'GOOGLE_DRIVE_STATUS')?.valor || integrations.google_drive_status || 'NAO_CONECTADO',
+  );
   const googleHasRefreshToken = Boolean(
     integrationConfigItems.find((item) => item.chave === 'GOOGLE_REFRESH_TOKEN')?.valor_encrypted ||
       integrationConfigItems.find((item) => item.chave === 'GOOGLE_REFRESH_TOKEN')?.valor,
   );
   const providerValue = String(clientDrafts.PROVEDOR_IA || iaItems.find((item) => item.chave === 'PROVEDOR_IA')?.valor || 'GEMINI').toUpperCase();
+  const instagramStatus = String(integrations.instagram_token_status || 'NAO_CONFIGURADO');
+  const instagramMode = String(integrations.instagram_connection_mode || 'INSTAGRAM_LOGIN');
+  const instagramMaskedToken = String(integrations.instagram_access_token || '');
   const providerModels = getProviderModels(providerValue);
   const selectedModel = String(clientDrafts.MODELO_IA || iaItems.find((item) => item.chave === 'MODELO_IA')?.valor || '');
 
@@ -314,6 +328,14 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
         cor_secundaria: clientData.cliente?.cor_secundaria || '',
       });
       setIntegrations((clientData.integracoes || {}) as ClienteIntegracao);
+      setInstagramManual({
+        instagram_username: String(clientData.integracoes?.instagram_username || ''),
+        instagram_user_id: String(clientData.integracoes?.instagram_user_id || ''),
+        instagram_business_id: String(clientData.integracoes?.instagram_business_id || ''),
+        instagram_access_token: '',
+        instagram_connection_mode: (clientData.integracoes?.instagram_connection_mode || 'MANUAL_TEST_TOKEN') as NonNullable<ClienteIntegracao['instagram_connection_mode']>,
+        instagram_token_status: (clientData.integracoes?.instagram_token_status || 'ATIVO_TESTE') as NonNullable<ClienteIntegracao['instagram_token_status']>,
+      });
       setAudits((auditData.items || clientData.auditoria || []) as ParametroAuditoria[]);
       setSystemAudits((systemAuditData.items || []) as ParametroAuditoria[]);
       const oauthStatusRes = await apiFetch('/api/google/oauth/status').catch(() => null);
@@ -380,7 +402,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
     const handler = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
       const data = event.data as { type?: string; success?: boolean; message?: string } | null;
-      if (!data || data.type !== 'instaflow-google-oauth') return;
+      if (!data || (data.type !== 'instaflow-google-oauth' && data.type !== 'instaflow-instagram-oauth')) return;
       if (data.success && data.message) {
         alert(data.message);
       }
@@ -484,21 +506,167 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
     }
   };
 
-  const connectGoogleDrive = () => {
+  const connectGoogleDrive = async () => {
     if (!clientId) return;
     if (!googleOauthStatus.ready) {
       setError(
-        `Para abrir o login Google, configure no ambiente: ${googleOauthStatus.missing.join(', ') || 'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI'}.`,
+        `Para abrir o login Google, configure no ambiente: ${googleOauthStatus.missing.join(', ') || 'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_DRIVE_REDIRECT_URI'}.`,
       );
       return;
     }
-    const popup = window.open(
-      `/api/google/oauth/start?cliente_id=${encodeURIComponent(clientId)}&return_to=${encodeURIComponent(window.location.pathname)}`,
-      'instaflow-google-oauth',
-      'width=720,height=760,menubar=no,toolbar=no,location=yes,status=no',
-    );
-    if (!popup) {
-      setError('O navegador bloqueou o popup de login Google.');
+    try {
+      const res = await apiFetch(`/api/clientes/${clientId}/integracoes/google-drive/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ return_to: window.location.pathname }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.authorization_url) throw new Error(data.error || 'Falha ao iniciar login Google.');
+      const popup = window.open(
+        String(data.authorization_url),
+        'instaflow-google-oauth',
+        'width=720,height=760,menubar=no,toolbar=no,location=yes,status=no',
+      );
+      if (!popup) {
+        setError('O navegador bloqueou o popup de login Google.');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao iniciar login Google.');
+    }
+  };
+
+  const useExistingGoogleDriveFolder = async () => {
+    if (!clientId) return;
+    setTesting('drive-folder');
+    setError('');
+    try {
+      const res = await apiFetch(`/api/clientes/${clientId}/integracoes/google-drive/use-existing-folder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ google_drive_folder_id: integrations.google_drive_folder_id || '' }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao validar pasta do Google Drive.');
+      alert(data.folder?.name ? `Pasta '${data.folder.name}' vinculada com sucesso.` : 'Pasta raiz vinculada com sucesso.');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao validar pasta do Google Drive.');
+    } finally {
+      setTesting('');
+    }
+  };
+
+  const setupGoogleDriveFolders = async () => {
+    if (!clientId) return;
+    setTesting('drive-setup');
+    setError('');
+    try {
+      const res = await apiFetch(`/api/clientes/${clientId}/integracoes/google-drive/setup-folders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ google_drive_folder_id: integrations.google_drive_folder_id || '' }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao criar estrutura do Google Drive.');
+      alert('Estrutura do Google Drive criada e vinculada ao cliente.');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao criar estrutura do Google Drive.');
+    } finally {
+      setTesting('');
+    }
+  };
+
+  const disconnectGoogleDrive = async () => {
+    if (!clientId) return;
+    setTesting('drive-disconnect');
+    setError('');
+    try {
+      const res = await apiFetch(`/api/clientes/${clientId}/integracoes/google-drive/disconnect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao desconectar Google Drive.');
+      alert('Conta Google desconectada do cliente.');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao desconectar Google Drive.');
+    } finally {
+      setTesting('');
+    }
+  };
+
+  const connectInstagram = async (mode: 'instagram' | 'meta') => {
+    if (!clientId) return;
+    try {
+      const route = mode === 'instagram' ? '/api/integrations/instagram/connect' : '/api/integrations/meta/connect';
+      const res = await apiFetch(
+        `${route}?clienteId=${encodeURIComponent(clientId)}&return_to=${encodeURIComponent(window.location.pathname)}&format=json`,
+      );
+      const data = await res.json();
+      if (!res.ok || !data.authorization_url) throw new Error(data.error || 'Falha ao iniciar login Instagram/Meta.');
+      const popup = window.open(
+        String(data.authorization_url),
+        'instaflow-instagram-oauth',
+        'width=720,height=760,menubar=no,toolbar=no,location=yes,status=no',
+      );
+      if (!popup) {
+        setError('O navegador bloqueou o popup de login Instagram/Meta.');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao iniciar login Instagram/Meta.');
+    }
+  };
+
+  const saveInstagramManualToken = async () => {
+    if (!clientId) return;
+    setSaving(true);
+    setError('');
+    try {
+      const res = await apiFetch(`/api/clientes/${clientId}/integracoes`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...integrations,
+          ...instagramManual,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar token Instagram.');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao salvar token Instagram.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const testInstagramIntegration = async (mode: 'instagram' | 'meta') => {
+    if (!clientId) return;
+    await runTest(mode === 'instagram' ? '/api/integrations/instagram/test' : '/api/integrations/meta/test', `instagram-${mode}`, {
+      clienteId: clientId,
+    });
+    await loadData();
+  };
+
+  const disconnectInstagramIntegration = async (mode: 'instagram' | 'meta') => {
+    if (!clientId) return;
+    setTesting(`instagram-disconnect-${mode}`);
+    setError('');
+    try {
+      const res = await apiFetch(mode === 'instagram' ? '/api/integrations/instagram/disconnect' : '/api/integrations/meta/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clienteId: clientId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao desconectar integraÃ§Ã£o Instagram.');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao desconectar integraÃ§Ã£o Instagram.');
+    } finally {
+      setTesting('');
     }
   };
 
@@ -806,11 +974,11 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h3 className="text-sm font-bold text-slate-800">Google Drive</h3>
-                <p className="mt-1 text-xs text-slate-500">Conecte uma conta Google do cliente e depois informe as pastas.</p>
+                <p className="mt-1 text-xs text-slate-500">Conecte a conta Google do cliente, vincule a pasta raiz e monte a estrutura operacional.</p>
               </div>
               <button
                 type="button"
-                onClick={connectGoogleDrive}
+                onClick={() => void connectGoogleDrive()}
                 className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
                 <Plug className="h-3.5 w-3.5" />
@@ -818,7 +986,12 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
               </button>
             </div>
             <div className={`mt-3 rounded-xl border p-4 text-xs ${googleHasRefreshToken ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
-              <p className="font-bold">{googleHasRefreshToken ? 'Conta Google conectada' : 'Conta Google ainda não conectada'}</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-bold">{googleHasRefreshToken ? 'Conta Google conectada' : 'Conta Google ainda não conectada'}</p>
+                <span className="rounded-full border border-current/20 bg-white/70 px-2 py-0.5 text-[10px] font-semibold">
+                  {googleDriveStatus}
+                </span>
+              </div>
               <p className="mt-1 leading-relaxed">
                 {googleConnectedEmail
                   ? `Conta atual: ${googleConnectedEmail}.`
@@ -833,34 +1006,54 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
                   Faltam no ambiente: {googleOauthStatus.missing.join(', ')}.
                 </p>
                 {googleOauthStatus.redirectUri && <p className="mt-1">Redirect atual: {googleOauthStatus.redirectUri}</p>}
-                <p className="mt-1">Para local, a URI costuma ser `http://localhost:3000/api/google/oauth/callback`.</p>
+                <p className="mt-1">Para local, a URI costuma ser `http://localhost:3000/api/integrations/google-drive/callback`.</p>
               </div>
             )}
             <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs text-emerald-900">
-              <p className="font-bold">Como o cliente deve preparar o Drive</p>
+              <p className="font-bold">Fluxo operacional do cliente</p>
               <ol className="mt-2 list-decimal space-y-1 pl-4 leading-relaxed">
-                <li>Criar uma pasta raiz exclusiva para a operação do cliente.</li>
-                <li>Conectar a conta Google do cliente pelo botão acima.</li>
-                <li>Separar subpastas para imagens, vídeos e publicados, se desejar organização física.</li>
-                <li>Copiar e colar os IDs das pastas no sistema, não o link completo do navegador.</li>
-                <li>Garantir que a conta conectada tenha permissão de leitura e escrita na pasta.</li>
+                <li>Conectar a conta Google que terá acesso ao Drive do cliente.</li>
+                <li>Informar a pasta raiz do cliente com o ID ou o link completo.</li>
+                <li>Usar a pasta existente ou pedir ao sistema para criar a estrutura padrão.</li>
+                <li>Validar a conexão antes de importar ou publicar.</li>
+                <li>O cliente precisa garantir leitura e escrita nessa pasta.</li>
               </ol>
             </div>
             <div className="mt-4 grid grid-cols-1 gap-3">
               <Field label="Pasta raiz do Drive" value={String(integrations.google_drive_folder_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, google_drive_folder_id: value }))} />
-              <Field label="Pasta de imagens" value={String(integrations.google_drive_imagens_folder_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, google_drive_imagens_folder_id: value }))} />
-              <Field label="Pasta de videos" value={String(integrations.google_drive_videos_folder_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, google_drive_videos_folder_id: value }))} />
-              <Field label="Pasta de publicados" value={String(integrations.google_drive_publicados_folder_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, google_drive_publicados_folder_id: value }))} />
+              <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:grid-cols-2">
+                <Field label="01 Entrada" value={String(integrations.google_drive_entrada_folder_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, google_drive_entrada_folder_id: value }))} disabled />
+                <Field label="02 Em aprovação" value={String(integrations.google_drive_aprovacao_folder_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, google_drive_aprovacao_folder_id: value }))} disabled />
+                <Field label="03 Aprovados" value={String(integrations.google_drive_aprovados_folder_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, google_drive_aprovados_folder_id: value }))} disabled />
+                <Field label="04 Publicados" value={String(integrations.google_drive_publicados_folder_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, google_drive_publicados_folder_id: value }))} disabled />
+                <Field label="05 Rejeitados" value={String(integrations.google_drive_rejeitados_folder_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, google_drive_rejeitados_folder_id: value }))} disabled />
+                <Field label="06 Arquivados" value={String(integrations.google_drive_arquivados_folder_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, google_drive_arquivados_folder_id: value }))} disabled />
+              </div>
             </div>
-            <div className="mt-4 flex justify-end">
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => void useExistingGoogleDriveFolder()}
+                disabled={testing === 'drive-folder'}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {testing === 'drive-folder' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                Usar pasta existente
+              </button>
+              <button
+                type="button"
+                onClick={() => void setupGoogleDriveFolders()}
+                disabled={testing === 'drive-setup'}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {testing === 'drive-setup' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Building2 className="h-3.5 w-3.5" />}
+                Criar estrutura padrão
+              </button>
               <button
                 type="button"
                 onClick={() =>
-                  void runTest(`/api/clientes/${clientId}/integracoes/google-drive/testar`, 'drive', {
+                  void runTest(`/api/clientes/${clientId}/integracoes/google-drive/test`, 'drive', {
                     google_drive_folder_id: integrations.google_drive_folder_id || '',
-                    google_drive_imagens_folder_id: integrations.google_drive_imagens_folder_id || '',
-                    google_drive_videos_folder_id: integrations.google_drive_videos_folder_id || '',
-                    google_drive_publicados_folder_id: integrations.google_drive_publicados_folder_id || '',
                   })
                 }
                 disabled={testing === 'drive'}
@@ -869,27 +1062,77 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
                 {testing === 'drive' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                 Testar Drive
               </button>
+              <button
+                type="button"
+                onClick={() => void disconnectGoogleDrive()}
+                disabled={testing === 'drive-disconnect'}
+                className="inline-flex items-center gap-2 rounded-lg border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+              >
+                {testing === 'drive-disconnect' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+                Desconectar
+              </button>
             </div>
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h3 className="text-sm font-bold text-slate-800">Meta</h3>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-800">Instagram / Meta</h3>
+                <p className="mt-1 text-xs text-slate-500">Integração profissional por cliente com modo manual de teste e OAuth.</p>
+              </div>
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold text-slate-700">
+                {instagramStatus}
+              </span>
+            </div>
+            <div className={`mt-3 rounded-xl border p-4 text-xs ${instagramStatus === 'ATIVO' || instagramStatus === 'ATIVO_TESTE' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
+              <p className="font-bold">{instagramStatus === 'ATIVO' || instagramStatus === 'ATIVO_TESTE' ? 'Instagram conectado' : 'Instagram não conectado'}</p>
+              <p className="mt-1 leading-relaxed">
+                Conta: {String(integrations.instagram_username || instagramManual.instagram_username || '@não informado')} | ID: {String(integrations.instagram_user_id || instagramManual.instagram_user_id || 'não informado')}
+              </p>
+              <p className="mt-1 leading-relaxed">
+                Modo: {instagramMode} | Token: {instagramMaskedToken || 'não cadastrado'}
+              </p>
+              {integrations.instagram_connected_at && <p className="mt-1">Última conexão: {new Date(String(integrations.instagram_connected_at)).toLocaleString('pt-BR')}</p>}
+            </div>
             <div className="mt-4 grid grid-cols-1 gap-3">
-              <Field label="Access token da Meta" value={String(integrations.instagram_access_token || '')} onChange={(value) => setIntegrations((current) => ({ ...current, instagram_access_token: value }))} secret />
-              <Field label="Instagram user ID" value={String(integrations.instagram_user_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, instagram_user_id: value }))} />
-              <Field label="Instagram business ID" value={String(integrations.instagram_business_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, instagram_business_id: value }))} />
+              <Field label="Instagram username" value={String(instagramManual.instagram_username || '')} onChange={(value) => setInstagramManual((current) => ({ ...current, instagram_username: value }))} />
+              <Field label="Instagram user ID" value={String(instagramManual.instagram_user_id || '')} onChange={(value) => setInstagramManual((current) => ({ ...current, instagram_user_id: value }))} />
+              <Field label="Instagram business ID" value={String(instagramManual.instagram_business_id || '')} onChange={(value) => setInstagramManual((current) => ({ ...current, instagram_business_id: value }))} />
+              <Field label="Access token manual de teste" value={String(instagramManual.instagram_access_token || '')} onChange={(value) => setInstagramManual((current) => ({ ...current, instagram_access_token: value }))} secret />
               <Field label="Facebook page ID" value={String(integrations.facebook_page_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, facebook_page_id: value }))} />
               <Field label="Graph API version" value={String(integrations.graph_api_version || '')} onChange={(value) => setIntegrations((current) => ({ ...current, graph_api_version: value }))} />
               <Field label="Modo de operacao" value={String(integrations.modo_operacao || 'SIMULADOR')} onChange={(value) => setIntegrations((current) => ({ ...current, modo_operacao: value as ClienteIntegracao['modo_operacao'] }))} />
             </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => void runTest(`/api/clientes/${clientId}/integracoes/meta/testar`, 'meta')} disabled={testing === 'meta'} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
-                {testing === 'meta' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-700">
+              <p className="font-bold text-slate-800">Fluxos disponíveis</p>
+              <p className="mt-1">1. Token manual de teste para validar a conta `farmbyfernandacarlota`.</p>
+              <p className="mt-1">2. Instagram Login como fluxo prioritário.</p>
+              <p className="mt-1">3. Facebook Login + Página como fallback.</p>
+            </div>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button type="button" onClick={() => connectInstagram('instagram')} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                <Plug className="h-3.5 w-3.5" />
+                Conectar Instagram
+              </button>
+              <button type="button" onClick={() => connectInstagram('meta')} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                <Plug className="h-3.5 w-3.5" />
+                Conectar via Meta
+              </button>
+              <button type="button" onClick={() => void saveInstagramManualToken()} disabled={saving} className="inline-flex items-center gap-2 rounded-lg bg-brand-secondary px-4 py-2 text-xs font-bold text-brand-darker shadow-sm hover:bg-brand-primary disabled:opacity-60">
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Salvar token manual
+              </button>
+              <button type="button" onClick={() => void testInstagramIntegration('instagram')} disabled={testing === 'instagram-instagram'} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+                {testing === 'instagram-instagram' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                Testar Instagram
+              </button>
+              <button type="button" onClick={() => void testInstagramIntegration('meta')} disabled={testing === 'instagram-meta'} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+                {testing === 'instagram-meta' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                 Testar Meta
               </button>
-              <button type="button" onClick={() => void saveIntegrations()} disabled={saving} className="inline-flex items-center gap-2 rounded-lg bg-brand-secondary px-4 py-2 text-xs font-bold text-brand-darker shadow-sm hover:bg-brand-primary disabled:opacity-60">
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                Salvar integracoes
+              <button type="button" onClick={() => void disconnectInstagramIntegration('instagram')} disabled={testing === 'instagram-disconnect-instagram'} className="inline-flex items-center gap-2 rounded-lg border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60">
+                {testing === 'instagram-disconnect-instagram' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+                Desconectar
               </button>
             </div>
           </div>

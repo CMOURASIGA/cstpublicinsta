@@ -35,6 +35,7 @@ __export(server_exports, {
 module.exports = __toCommonJS(server_exports);
 var import_crypto = require("crypto");
 var import_express = __toESM(require("express"), 1);
+var import_crypto2 = require("crypto");
 var import_dotenv = __toESM(require("dotenv"), 1);
 var import_path = __toESM(require("path"), 1);
 var import_genai = require("@google/genai");
@@ -194,6 +195,72 @@ var CLIENTE_CONFIG_DEFAULTS = [
     sensivel: false,
     editavel_por_cliente: true,
     usar_padrao_sistema: true
+  },
+  {
+    chave: "GOOGLE_DRIVE_STATUS",
+    valor: "NAO_CONECTADO",
+    valor_encrypted: null,
+    tipo: "STRING",
+    categoria: "INTEGRACAO",
+    descricao: "Status operacional do Google Drive do cliente.",
+    sensivel: false,
+    editavel_por_cliente: false,
+    usar_padrao_sistema: false
+  },
+  {
+    chave: "GOOGLE_OAUTH_ACCOUNT_EMAIL",
+    valor: "",
+    valor_encrypted: null,
+    tipo: "STRING",
+    categoria: "INTEGRACAO",
+    descricao: "Conta Google conectada ao cliente.",
+    sensivel: false,
+    editavel_por_cliente: false,
+    usar_padrao_sistema: false
+  },
+  {
+    chave: "GOOGLE_OAUTH_CONNECTED_AT",
+    valor: "",
+    valor_encrypted: null,
+    tipo: "STRING",
+    categoria: "INTEGRACAO",
+    descricao: "Data da ultima conexao Google.",
+    sensivel: false,
+    editavel_por_cliente: false,
+    usar_padrao_sistema: false
+  },
+  {
+    chave: "GOOGLE_REFRESH_TOKEN",
+    valor: null,
+    valor_encrypted: null,
+    tipo: "SECRET",
+    categoria: "INTEGRACAO",
+    descricao: "Refresh token da conta Google do cliente.",
+    sensivel: true,
+    editavel_por_cliente: false,
+    usar_padrao_sistema: false
+  },
+  {
+    chave: "GOOGLE_DRIVE_LAST_SYNC_AT",
+    valor: "",
+    valor_encrypted: null,
+    tipo: "STRING",
+    categoria: "INTEGRACAO",
+    descricao: "Data da ultima sincronizacao Drive.",
+    sensivel: false,
+    editavel_por_cliente: false,
+    usar_padrao_sistema: false
+  },
+  {
+    chave: "GOOGLE_DRIVE_LAST_ERROR",
+    valor: "",
+    valor_encrypted: null,
+    tipo: "STRING",
+    categoria: "INTEGRACAO",
+    descricao: "Ultimo erro do Google Drive.",
+    sensivel: false,
+    editavel_por_cliente: false,
+    usar_padrao_sistema: false
   }
 ];
 var memoryStore = {
@@ -201,14 +268,28 @@ var memoryStore = {
   sistemaConfiguracoes: [],
   clienteConfiguracoes: [],
   clienteIntegracoes: [],
+  clienteDriveArquivos: [],
+  googleDriveOauthStates: [],
+  instagramOauthStates: [],
   clienteUsuarios: [],
   parametroAuditoria: [],
+  postInsightsResumo: [],
   posts: [],
   usuarios: [...defaultUsers],
   historicos: [],
   logs: []
 };
-var REQUIRED_SUPABASE_TABLES = ["clientes", "cliente_usuarios", "cliente_integracoes", "posts", "usuarios", "historico_posts", "logs"];
+var REQUIRED_SUPABASE_TABLES = [
+  "clientes",
+  "cliente_usuarios",
+  "cliente_integracoes",
+  "posts",
+  "usuarios",
+  "historico_posts",
+  "logs",
+  "instagram_oauth_states",
+  "post_insights_resumo"
+];
 var SCHEMA_CACHE_TTL_MS = 6e4;
 var supabaseSchemaCache = null;
 var usuariosRoleColumnAvailableCache = null;
@@ -256,22 +337,6 @@ function getFallbackAiApiKey(provider) {
       return trimEnv(process.env.GEMINI_API_KEY);
   }
 }
-function createSignedState(payload) {
-  const raw = Buffer.from(JSON.stringify(payload), "utf-8").toString("base64url");
-  const signature = (0, import_crypto.createHmac)("sha256", getRuntimeConfig().mediaUrlSigningSecret).update(raw).digest("hex");
-  return `${raw}.${signature}`;
-}
-function parseSignedState(state) {
-  const [raw, signature] = String(state || "").split(".");
-  if (!raw || !signature) return null;
-  const expected = (0, import_crypto.createHmac)("sha256", getRuntimeConfig().mediaUrlSigningSecret).update(raw).digest("hex");
-  if (signature !== expected) return null;
-  try {
-    return JSON.parse(Buffer.from(raw, "base64url").toString("utf-8"));
-  } catch {
-    return null;
-  }
-}
 function renderSimpleHtmlPage(title, body, tone = "warn") {
   return `<!doctype html>
 <html lang="pt-BR">
@@ -296,6 +361,39 @@ function renderSimpleHtmlPage(title, body, tone = "warn") {
     </main>
   </body>
 </html>`;
+}
+function getSecretCipherKey() {
+  return (0, import_crypto2.createHash)("sha256").update(getRuntimeConfig().mediaUrlSigningSecret).digest();
+}
+function encryptSecretValue(value) {
+  const raw = trimEnv(value);
+  if (!raw) return "";
+  if (raw.startsWith("enc:")) return raw;
+  const iv = (0, import_crypto2.randomBytes)(12);
+  const cipher = (0, import_crypto2.createCipheriv)("aes-256-gcm", getSecretCipherKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(raw, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:${iv.toString("base64url")}.${tag.toString("base64url")}.${encrypted.toString("base64url")}`;
+}
+function decryptSecretValue(value) {
+  const raw = trimEnv(value || "");
+  if (!raw) return "";
+  if (!raw.startsWith("enc:")) return raw;
+  const parts = raw.slice(4).split(".");
+  if (parts.length !== 3) return "";
+  const [iv, tag, payload] = parts.map((item) => Buffer.from(item, "base64url"));
+  const decipher = (0, import_crypto2.createDecipheriv)("aes-256-gcm", getSecretCipherKey(), iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(payload), decipher.final()]).toString("utf8");
+}
+function extractGoogleDriveFolderId(input) {
+  const trimmed = trimEnv(input);
+  if (!trimmed) return "";
+  const folderMatch = trimmed.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (folderMatch) return folderMatch[1];
+  const idParamMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idParamMatch) return idParamMatch[1];
+  return trimmed;
 }
 function normalizeAppUrl(rawUrl) {
   const fallback = `http://localhost:${PORT}`;
@@ -325,7 +423,9 @@ function getRuntimeConfig() {
   const googleClientId = trimEnv(process.env.GOOGLE_CLIENT_ID);
   const googleClientSecret = trimEnv(process.env.GOOGLE_CLIENT_SECRET || process.env.GOOGEL_SECRET_KEY);
   const googleRefreshToken = trimEnv(process.env.GOOGLE_REFRESH_TOKEN);
-  const googleRedirectUri = trimEnv(process.env.GOOGLE_REDIRECT_URI);
+  const googleRedirectUri = trimEnv(
+    process.env.GOOGLE_DRIVE_REDIRECT_URI || process.env.GOOGLE_REDIRECT_URI
+  );
   const googleClientEmail = trimEnv(process.env.GOOGLE_CLIENT_EMAIL);
   const googlePrivateKey = normalizePrivateKey(process.env.GOOGLE_PRIVATE_KEY);
   const instagramAccessToken = trimEnv(process.env.INSTAGRAM_ACCESS_TOKEN);
@@ -337,6 +437,9 @@ function getRuntimeConfig() {
   const metaAppId = trimEnv(process.env.META_APP_ID);
   const metaAppSecret = trimEnv(process.env.META_APP_SECRET);
   const metaRedirectUri = trimEnv(process.env.META_REDIRECT_URI);
+  const instagramAppId = trimEnv(process.env.INSTAGRAM_APP_ID) || metaAppId;
+  const instagramAppSecret = trimEnv(process.env.INSTAGRAM_APP_SECRET) || metaAppSecret;
+  const instagramRedirectUri = trimEnv(process.env.INSTAGRAM_REDIRECT_URI);
   const metaVerifyToken = trimEnv(process.env.META_VERIFY_TOKEN);
   const appUrl = normalizeAppUrl(rawAppUrl);
   const appUrlIsPublic = Boolean(rawAppUrl) && !isLocalhostUrl(appUrl);
@@ -346,7 +449,7 @@ function getRuntimeConfig() {
   const googleAuthConfigured = Boolean(
     googleClientEmail && googlePrivateKey || googleClientId && googleClientSecret && googleRefreshToken
   );
-  const googleConfigured = Boolean(googleDriveFolderId && googleAuthConfigured);
+  const googleConfigured = Boolean(googleAuthConfigured);
   const instagramConfigured = Boolean(instagramAccessToken && (instagramUserId || instagramBusinessId));
   const geminiConfigured = Boolean(trimEnv(process.env.GEMINI_API_KEY));
   const missingEnv = [];
@@ -381,6 +484,9 @@ function getRuntimeConfig() {
     metaAppId,
     metaAppSecret,
     metaRedirectUri,
+    instagramAppId,
+    instagramAppSecret,
+    instagramRedirectUri,
     instagramAccessToken,
     instagramUserId,
     instagramBusinessId,
@@ -903,6 +1009,150 @@ async function createParametroAuditoria(payload) {
     memoryStore.parametroAuditoria.unshift(record);
   }
 }
+async function createGoogleDriveOauthState(payload) {
+  const record = {
+    id: (0, import_crypto.randomUUID)(),
+    criado_em: (/* @__PURE__ */ new Date()).toISOString(),
+    ...payload
+  };
+  if (!await canUseSupabase()) {
+    memoryStore.googleDriveOauthStates.unshift(record);
+    return record;
+  }
+  try {
+    const created = await supabaseRequest("google_drive_oauth_states", {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(record)
+    });
+    return created[0] || record;
+  } catch {
+    memoryStore.googleDriveOauthStates.unshift(record);
+    return record;
+  }
+}
+async function getGoogleDriveOauthState(stateValue) {
+  if (!await canUseSupabase()) {
+    return memoryStore.googleDriveOauthStates.find((item) => item.state === stateValue) || null;
+  }
+  try {
+    const items = await supabaseRequest(
+      `google_drive_oauth_states?state=eq.${sanitizeId(stateValue)}&select=*`
+    );
+    return items[0] || memoryStore.googleDriveOauthStates.find((item) => item.state === stateValue) || null;
+  } catch {
+    return memoryStore.googleDriveOauthStates.find((item) => item.state === stateValue) || null;
+  }
+}
+async function markGoogleDriveOauthStateUsed(stateId, stateValue) {
+  const usedAt = (/* @__PURE__ */ new Date()).toISOString();
+  const memoryItem = memoryStore.googleDriveOauthStates.find((item) => item.id === stateId || item.state === stateValue);
+  if (memoryItem) {
+    memoryItem.used_at = usedAt;
+  }
+  if (!await canUseSupabase()) {
+    return;
+  }
+  try {
+    await supabaseRequest(
+      `google_drive_oauth_states?id=eq.${sanitizeId(stateId)}`,
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ used_at: usedAt })
+      }
+    );
+  } catch {
+  }
+}
+async function upsertClienteDriveArquivo(payload) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const record = {
+    id: payload.id || (0, import_crypto.randomUUID)(),
+    criado_em: now,
+    atualizado_em: now,
+    ...payload
+  };
+  if (!await canUseSupabase()) {
+    const index = memoryStore.clienteDriveArquivos.findIndex((item) => item.drive_file_id === record.drive_file_id);
+    if (index >= 0) {
+      memoryStore.clienteDriveArquivos[index] = { ...memoryStore.clienteDriveArquivos[index], ...record, atualizado_em: now };
+      return memoryStore.clienteDriveArquivos[index];
+    }
+    memoryStore.clienteDriveArquivos.unshift(record);
+    return record;
+  }
+  try {
+    const created = await supabaseRequest("cliente_drive_arquivos", {
+      method: "POST",
+      headers: { Prefer: "return=representation,resolution=merge-duplicates" },
+      body: JSON.stringify(record)
+    });
+    return created[0] || record;
+  } catch {
+    const index = memoryStore.clienteDriveArquivos.findIndex((item) => item.drive_file_id === record.drive_file_id);
+    if (index >= 0) {
+      memoryStore.clienteDriveArquivos[index] = { ...memoryStore.clienteDriveArquivos[index], ...record, atualizado_em: now };
+      return memoryStore.clienteDriveArquivos[index];
+    }
+    memoryStore.clienteDriveArquivos.unshift(record);
+    return record;
+  }
+}
+async function createInstagramOauthState(payload) {
+  const record = {
+    id: payload.id || (0, import_crypto.randomUUID)(),
+    criado_em: (/* @__PURE__ */ new Date()).toISOString(),
+    ...payload
+  };
+  if (!await canUseSupabase()) {
+    memoryStore.instagramOauthStates.unshift(record);
+    return record;
+  }
+  try {
+    const created = await supabaseRequest("instagram_oauth_states", {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(record)
+    });
+    return created[0] || record;
+  } catch {
+    memoryStore.instagramOauthStates.unshift(record);
+    return record;
+  }
+}
+async function getInstagramOauthState(stateValue) {
+  if (!await canUseSupabase()) {
+    return memoryStore.instagramOauthStates.find((item) => item.state === stateValue) || null;
+  }
+  try {
+    const items = await supabaseRequest(
+      `instagram_oauth_states?state=eq.${sanitizeId(stateValue)}&select=*`
+    );
+    return items[0] || memoryStore.instagramOauthStates.find((item) => item.state === stateValue) || null;
+  } catch {
+    return memoryStore.instagramOauthStates.find((item) => item.state === stateValue) || null;
+  }
+}
+async function markInstagramOauthStateUsed(stateId, stateValue) {
+  const usedAt = (/* @__PURE__ */ new Date()).toISOString();
+  const memoryItem = memoryStore.instagramOauthStates.find((item) => item.id === stateId || item.state === stateValue);
+  if (memoryItem) memoryItem.used_at = usedAt;
+  if (!await canUseSupabase()) {
+    return;
+  }
+  try {
+    await supabaseRequest(
+      `instagram_oauth_states?id=eq.${sanitizeId(stateId)}`,
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ used_at: usedAt })
+      }
+    );
+  } catch {
+  }
+}
 async function upsertSistemaConfiguracao(item) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const existing = (await listSistemaConfiguracoes()).find((config) => config.chave === item.chave);
@@ -984,12 +1234,32 @@ async function ensureClienteSetup(clienteId) {
       id: (0, import_crypto.randomUUID)(),
       cliente_id: clienteId,
       google_drive_folder_id: null,
+      google_drive_entrada_folder_id: null,
+      google_drive_aprovacao_folder_id: null,
+      google_drive_aprovados_folder_id: null,
       google_drive_imagens_folder_id: null,
       google_drive_videos_folder_id: null,
       google_drive_publicados_folder_id: null,
+      google_drive_rejeitados_folder_id: null,
+      google_drive_arquivados_folder_id: null,
+      google_account_email: null,
+      google_drive_refresh_token_encrypted: null,
+      google_drive_token_expires_at: null,
+      google_drive_status: "NAO_CONECTADO",
+      google_drive_last_sync_at: null,
+      google_drive_last_error: null,
+      instagram_username: null,
       instagram_access_token: null,
+      instagram_access_token_encrypted: null,
+      instagram_token_status: "NAO_CONFIGURADO",
+      instagram_token_expires_at: null,
+      instagram_connected_at: null,
+      instagram_last_sync_at: null,
+      instagram_connection_mode: "INSTAGRAM_LOGIN",
+      instagram_webhook_enabled: false,
       instagram_user_id: null,
       instagram_business_id: null,
+      instagram_media_actor_id: null,
       facebook_page_id: null,
       graph_api_version: getRuntimeConfig().graphApiVersion,
       modo_operacao: "SIMULADOR",
@@ -1022,20 +1292,31 @@ async function resolveConfigValue(clienteId, chave) {
   const sistemaConfig = sistemaConfigs.find((config) => config.chave === chave);
   return sistemaConfig?.valor_encrypted || sistemaConfig?.valor || "";
 }
+async function resolveSecretConfigValue(clienteId, chave) {
+  return decryptSecretValue(await resolveConfigValue(clienteId, chave));
+}
 async function getClienteOperationalContext(clienteId) {
   const runtime = getRuntimeConfig();
   const integrations = clienteId ? await getClienteIntegracao(clienteId) : null;
   const aiProvider = await resolveConfigValue(clienteId || null, "PROVEDOR_IA") || trimEnv(process.env.AI_DEFAULT_PROVIDER) || "GEMINI";
   const aiModel = await resolveConfigValue(clienteId || null, "MODELO_IA") || trimEnv(process.env.AI_DEFAULT_MODEL) || runtime.geminiModel;
   const aiApiKey = await resolveConfigValue(clienteId || null, "IA_API_KEY") || getFallbackAiApiKey(aiProvider);
-  const googleRefreshToken = await resolveConfigValue(clienteId || null, "GOOGLE_REFRESH_TOKEN") || runtime.googleRefreshToken;
+  const googleRefreshToken = await resolveSecretConfigValue(clienteId || null, "GOOGLE_REFRESH_TOKEN") || runtime.googleRefreshToken;
+  const googleDriveStatus = await resolveConfigValue(clienteId || null, "GOOGLE_DRIVE_STATUS") || integrations?.google_drive_status || "NAO_CONECTADO";
+  const googleAccountEmail = await resolveConfigValue(clienteId || null, "GOOGLE_OAUTH_ACCOUNT_EMAIL") || integrations?.google_account_email || "";
   const driveRootId = integrations?.google_drive_folder_id || trimEnv(process.env.GOOGLE_DRIVE_FOLDER_ID) || trimEnv(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID);
-  const driveImagesId = integrations?.google_drive_imagens_folder_id || trimEnv(process.env.GOOGLE_DRIVE_IMAGES_FOLDER_ID);
-  const driveVideosId = integrations?.google_drive_videos_folder_id || trimEnv(process.env.GOOGLE_DRIVE_VIDEOS_FOLDER_ID);
+  const driveEntradaId = integrations?.google_drive_entrada_folder_id || integrations?.google_drive_imagens_folder_id || trimEnv(process.env.GOOGLE_DRIVE_IMAGES_FOLDER_ID);
+  const driveAprovacaoId = integrations?.google_drive_aprovacao_folder_id || "";
+  const driveAprovadosId = integrations?.google_drive_aprovados_folder_id || "";
   const drivePublishedId = integrations?.google_drive_publicados_folder_id || trimEnv(process.env.GOOGLE_DRIVE_PUBLISHED_FOLDER_ID);
-  const instagramAccessToken = integrations?.instagram_access_token || runtime.instagramAccessToken;
+  const driveRejeitadosId = integrations?.google_drive_rejeitados_folder_id || "";
+  const driveArquivadosId = integrations?.google_drive_arquivados_folder_id || "";
+  const instagramAccessToken = decryptSecretValue(integrations?.instagram_access_token_encrypted) || integrations?.instagram_access_token || runtime.instagramAccessToken;
+  const instagramUsername = integrations?.instagram_username || "";
   const instagramUserId = integrations?.instagram_user_id || runtime.instagramUserId;
   const instagramBusinessId = integrations?.instagram_business_id || runtime.instagramBusinessId;
+  const instagramConnectionMode = integrations?.instagram_connection_mode || "INSTAGRAM_LOGIN";
+  const instagramTokenStatus = integrations?.instagram_token_status || (instagramAccessToken ? "ATIVO" : "NAO_CONFIGURADO");
   const graphApiVersion = integrations?.graph_api_version || runtime.graphApiVersion;
   const googleConfigured = Boolean(
     driveRootId && (runtime.googleClientEmail && runtime.googlePrivateKey || runtime.googleClientId && runtime.googleClientSecret && googleRefreshToken)
@@ -1045,14 +1326,22 @@ async function getClienteOperationalContext(clienteId) {
   return {
     clienteId: clienteId || null,
     driveRootId,
-    driveImagesId,
-    driveVideosId,
+    driveEntradaId,
+    driveAprovacaoId,
+    driveAprovadosId,
     drivePublishedId,
+    driveRejeitadosId,
+    driveArquivadosId,
     googleRefreshToken,
+    googleDriveStatus,
+    googleAccountEmail,
     graphApiVersion,
+    instagramUsername,
     instagramAccessToken,
     instagramUserId,
     instagramBusinessId,
+    instagramConnectionMode,
+    instagramTokenStatus,
     facebookPageId: integrations?.facebook_page_id || runtime.facebookPageId,
     instagramGraphBaseUrl: runtime.instagramGraphBaseUrl,
     googleConfigured,
@@ -1063,6 +1352,135 @@ async function getClienteOperationalContext(clienteId) {
     aiConfigured: Boolean(aiApiKey),
     modoOperacao
   };
+}
+async function updateClienteIntegracaoRecord(clienteId, patch) {
+  const current = await getClienteIntegracao(clienteId);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const payload = {
+    id: current?.id || (0, import_crypto.randomUUID)(),
+    criado_em: current?.criado_em || now,
+    modo_operacao: current?.modo_operacao || "SIMULADOR",
+    graph_api_version: current?.graph_api_version || getRuntimeConfig().graphApiVersion,
+    ...current,
+    ...patch,
+    cliente_id: clienteId,
+    atualizado_em: now
+  };
+  if (!await canUseSupabase()) {
+    const index = memoryStore.clienteIntegracoes.findIndex((item) => item.cliente_id === clienteId);
+    if (index >= 0) {
+      memoryStore.clienteIntegracoes[index] = payload;
+    } else {
+      memoryStore.clienteIntegracoes.unshift(payload);
+    }
+    return payload;
+  }
+  const existing = await supabaseRequest(
+    `cliente_integracoes?cliente_id=eq.${sanitizeId(clienteId)}&select=*`
+  ).catch(() => []);
+  const result = existing.length ? await supabaseRequest(
+    `cliente_integracoes?cliente_id=eq.${sanitizeId(clienteId)}`,
+    {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(payload)
+    }
+  ) : await supabaseRequest("cliente_integracoes", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify(payload)
+  });
+  return result[0] || payload;
+}
+function sanitizeClienteIntegracaoForResponse(integracao) {
+  if (!integracao) return null;
+  const maskedToken = integracao.instagram_access_token_encrypted ? "IG...****" : integracao.instagram_access_token ? "IG...****" : null;
+  return {
+    ...integracao,
+    instagram_access_token: maskedToken,
+    instagram_access_token_encrypted: integracao.instagram_access_token_encrypted ? "ENCRYPTED" : null,
+    google_drive_access_token_encrypted: integracao.google_drive_access_token_encrypted ? "ENCRYPTED" : null,
+    google_drive_refresh_token_encrypted: integracao.google_drive_refresh_token_encrypted ? "ENCRYPTED" : null
+  };
+}
+async function setClienteInstagramStatus(clienteId, status, patch) {
+  return updateClienteIntegracaoRecord(clienteId, {
+    instagram_token_status: status,
+    instagram_last_sync_at: patch?.instagram_last_sync_at === void 0 ? (/* @__PURE__ */ new Date()).toISOString() : patch.instagram_last_sync_at,
+    ...patch
+  });
+}
+async function setClienteGoogleDriveStatus(clienteId, status, extra) {
+  await upsertClienteConfiguracao(clienteId, {
+    chave: "GOOGLE_DRIVE_STATUS",
+    valor: status,
+    valor_encrypted: null,
+    tipo: "STRING",
+    categoria: "INTEGRACAO",
+    descricao: "Status operacional do Google Drive do cliente.",
+    sensivel: false,
+    editavel_por_cliente: false,
+    usar_padrao_sistema: false
+  });
+  if (extra?.accountEmail !== void 0) {
+    await upsertClienteConfiguracao(clienteId, {
+      chave: "GOOGLE_OAUTH_ACCOUNT_EMAIL",
+      valor: extra.accountEmail || "",
+      valor_encrypted: null,
+      tipo: "STRING",
+      categoria: "INTEGRACAO",
+      descricao: "Conta Google conectada ao cliente.",
+      sensivel: false,
+      editavel_por_cliente: false,
+      usar_padrao_sistema: false
+    });
+  }
+  if (extra?.connectedAt !== void 0) {
+    await upsertClienteConfiguracao(clienteId, {
+      chave: "GOOGLE_OAUTH_CONNECTED_AT",
+      valor: extra.connectedAt || "",
+      valor_encrypted: null,
+      tipo: "STRING",
+      categoria: "INTEGRACAO",
+      descricao: "Data da ultima conexao Google.",
+      sensivel: false,
+      editavel_por_cliente: false,
+      usar_padrao_sistema: false
+    });
+  }
+  if (extra?.lastError !== void 0) {
+    await upsertClienteConfiguracao(clienteId, {
+      chave: "GOOGLE_DRIVE_LAST_ERROR",
+      valor: extra.lastError || "",
+      valor_encrypted: null,
+      tipo: "STRING",
+      categoria: "INTEGRACAO",
+      descricao: "Ultimo erro do Google Drive.",
+      sensivel: false,
+      editavel_por_cliente: false,
+      usar_padrao_sistema: false
+    });
+  }
+  if (extra?.token !== void 0) {
+    await upsertClienteConfiguracao(clienteId, {
+      chave: "GOOGLE_REFRESH_TOKEN",
+      valor: null,
+      valor_encrypted: extra.token ? encryptSecretValue(extra.token) : null,
+      tipo: "SECRET",
+      categoria: "INTEGRACAO",
+      descricao: "Refresh token da conta Google do cliente.",
+      sensivel: true,
+      editavel_por_cliente: false,
+      usar_padrao_sistema: false
+    });
+  }
+  await updateClienteIntegracaoRecord(clienteId, {
+    google_drive_status: status,
+    google_account_email: extra?.accountEmail,
+    google_drive_refresh_token_encrypted: extra?.token ? encryptSecretValue(extra.token) : void 0,
+    google_drive_last_error: extra?.lastError,
+    google_drive_last_sync_at: extra?.connectedAt
+  });
 }
 function toJsonString(payload) {
   if (payload === void 0) return void 0;
@@ -1781,13 +2199,14 @@ function base64UrlEncode(value) {
 async function getGoogleAccessToken(clienteId) {
   const config = getRuntimeConfig();
   const context = await getClienteOperationalContext(clienteId);
+  const driveScope = "https://www.googleapis.com/auth/drive.file";
   if (config.googleClientEmail && config.googlePrivateKey) {
     const now = Math.floor(Date.now() / 1e3);
     const header = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }));
     const claimSet = base64UrlEncode(
       JSON.stringify({
         iss: config.googleClientEmail,
-        scope: "https://www.googleapis.com/auth/drive",
+        scope: driveScope,
         aud: "https://oauth2.googleapis.com/token",
         exp: now + 3600,
         iat: now
@@ -1885,21 +2304,38 @@ async function ensureDriveFolders(clienteId) {
   if (!context.driveRootId) {
     throw new Error("Cliente sem pasta raiz do Google Drive configurada.");
   }
-  const imagensId = context.driveImagesId || await findOrCreateDriveFolderForClient(clienteId, "Imagens", context.driveRootId);
-  const videosId = context.driveVideosId || await findOrCreateDriveFolderForClient(clienteId, "Videos", context.driveRootId);
-  const publicadosId = context.drivePublishedId || await findOrCreateDriveFolderForClient(clienteId, "Publicados", context.driveRootId);
+  const entradaId = context.driveEntradaId || await findOrCreateDriveFolderForClient(clienteId, "01 Entrada", context.driveRootId);
+  const aprovacaoId = context.driveAprovacaoId || await findOrCreateDriveFolderForClient(clienteId, "02 Em Aprovacao", context.driveRootId);
+  const aprovadosId = context.driveAprovadosId || await findOrCreateDriveFolderForClient(clienteId, "03 Aprovados", context.driveRootId);
+  const publicadosId = context.drivePublishedId || await findOrCreateDriveFolderForClient(clienteId, "04 Publicados", context.driveRootId);
+  const rejeitadosId = context.driveRejeitadosId || await findOrCreateDriveFolderForClient(clienteId, "05 Rejeitados", context.driveRootId);
+  const arquivadosId = context.driveArquivadosId || await findOrCreateDriveFolderForClient(clienteId, "06 Arquivados", context.driveRootId);
+  if (clienteId) {
+    await updateClienteIntegracaoRecord(clienteId, {
+      google_drive_entrada_folder_id: entradaId,
+      google_drive_aprovacao_folder_id: aprovacaoId,
+      google_drive_aprovados_folder_id: aprovadosId,
+      google_drive_publicados_folder_id: publicadosId,
+      google_drive_rejeitados_folder_id: rejeitadosId,
+      google_drive_arquivados_folder_id: arquivadosId,
+      google_drive_imagens_folder_id: entradaId,
+      google_drive_videos_folder_id: null
+    });
+  }
   return {
     rootId: context.driveRootId,
-    imagensId,
-    videosId,
-    publicadosId
+    entradaId,
+    aprovacaoId,
+    aprovadosId,
+    publicadosId,
+    rejeitadosId,
+    arquivadosId
   };
 }
 async function uploadFileToGoogleDrive(input, clienteId) {
   const folders = await ensureDriveFolders(clienteId);
-  const isVideo = inferPostType(input.mimeType, input.filename) !== "IMAGEM";
-  const parentId = isVideo ? folders.videosId : folders.imagensId;
-  const folderName = isVideo ? "Videos" : "Imagens";
+  const parentId = folders.entradaId;
+  const folderName = "01 Entrada";
   const accessToken = await getGoogleAccessToken(clienteId);
   const boundary = `instaflow-${Date.now()}`;
   const metadata = {
@@ -2091,6 +2527,104 @@ async function publishInstagramContainer(creationId, clienteId) {
     permalink
   };
 }
+async function exchangeInstagramCodeForToken(code) {
+  const config = getRuntimeConfig();
+  const response = await fetch("https://api.instagram.com/oauth/access_token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: new URLSearchParams({
+      client_id: config.instagramAppId,
+      client_secret: config.instagramAppSecret,
+      grant_type: "authorization_code",
+      redirect_uri: config.instagramRedirectUri,
+      code
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`Instagram OAuth ${response.status}: ${await response.text()}`);
+  }
+  return safeParseJson(response);
+}
+async function exchangeMetaCodeForToken(code) {
+  const config = getRuntimeConfig();
+  const url = new URL(`https://graph.facebook.com/${config.graphApiVersion}/oauth/access_token`);
+  url.searchParams.set("client_id", config.metaAppId);
+  url.searchParams.set("client_secret", config.metaAppSecret);
+  url.searchParams.set("redirect_uri", config.metaRedirectUri);
+  url.searchParams.set("code", code);
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    throw new Error(`Meta OAuth ${response.status}: ${await response.text()}`);
+  }
+  return safeParseJson(response);
+}
+async function syncInstagramPostInsights(clienteId, postId) {
+  const post = await getPostById(postId, clienteId);
+  if (!post) {
+    throw new HttpError(404, "Post n\xC3\xA3o encontrado.");
+  }
+  const mediaId = post.instagram_media_id || post.instagram_post_id;
+  if (!mediaId) {
+    throw new HttpError(400, "Post ainda n\xC3\xA3o possui instagram_media_id para sincronizar insights.");
+  }
+  const context = await getClienteOperationalContext(clienteId);
+  const media = await instagramGraphRequest(
+    context,
+    `/${mediaId}?fields=id,permalink,like_count,comments_count,timestamp&access_token=${encodeURIComponent(context.instagramAccessToken)}`
+  );
+  let insightsPayload = null;
+  let reach = 0;
+  let views = 0;
+  let saved = 0;
+  let shares = 0;
+  try {
+    insightsPayload = await instagramGraphRequest(
+      context,
+      `/${mediaId}/insights?metric=reach,impressions,saved,shares&access_token=${encodeURIComponent(context.instagramAccessToken)}`
+    );
+    const data = Array.isArray(insightsPayload.data) ? insightsPayload.data || [] : [];
+    for (const item of data) {
+      const name = String(item.name || "");
+      const values = Array.isArray(item.values) ? item.values : [];
+      const current = Number(values[0]?.value || 0);
+      if (name === "reach") reach = current;
+      if (name === "impressions") views = current;
+      if (name === "saved") saved = current;
+      if (name === "shares") shares = current;
+    }
+  } catch {
+    insightsPayload = null;
+  }
+  const likes = Number(media.like_count || 0);
+  const comments = Number(media.comments_count || 0);
+  const total_interactions = likes + comments + saved + shares;
+  const engagement_rate = reach > 0 ? Number((total_interactions / reach * 100).toFixed(2)) : 0;
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const resumo = await upsertPostInsightResumo({
+    cliente_id: clienteId,
+    post_id: postId,
+    instagram_media_id: String(mediaId),
+    views,
+    reach,
+    likes,
+    comments,
+    shares,
+    saved,
+    total_interactions,
+    engagement_rate,
+    last_sync_at: now,
+    raw_payload: { media, insights: insightsPayload }
+  });
+  await updatePostRecord(postId, {
+    cliente_id: clienteId,
+    instagram_permalink: typeof media.permalink === "string" ? media.permalink : post.instagram_permalink || null,
+    atualizado_em: now
+  });
+  await addLog("Instagram API", "info", "Insights do post sincronizados.", { postId, mediaId }, clienteId);
+  return resumo;
+}
 async function publishPost(post, author) {
   const context = await getClienteOperationalContext(post.cliente_id || null);
   await addLog("Instagram API", "info", `Iniciando publica\xC3\xA7\xC3\xA3o do post '${post.titulo}'.`, {
@@ -2103,8 +2637,12 @@ async function publishPost(post, author) {
     const simulated = await updatePostRecord(post.id, {
       status: "PUBLICADA",
       instagram_post_id: `sim_${Date.now()}`,
+      instagram_media_id: `sim_${Date.now()}`,
+      instagram_publish_status: "PUBLICADO",
       data_publicacao: (/* @__PURE__ */ new Date()).toISOString(),
+      instagram_published_at: (/* @__PURE__ */ new Date()).toISOString(),
       atualizado_em: (/* @__PURE__ */ new Date()).toISOString(),
+      instagram_publish_error: null,
       erro_detalhe: void 0
     });
     await createHistoryRecord({
@@ -2129,6 +2667,7 @@ async function publishPost(post, author) {
   }, post.cliente_id || void 0);
   await updatePostRecord(post.id, {
     creation_id: creationId,
+    instagram_publish_status: "PUBLICANDO",
     status: "APROVADA",
     atualizado_em: (/* @__PURE__ */ new Date()).toISOString()
   });
@@ -2137,8 +2676,13 @@ async function publishPost(post, author) {
   const next = await updatePostRecord(post.id, {
     status: "PUBLICADA",
     instagram_post_id: published.mediaId,
+    instagram_media_id: published.mediaId,
+    instagram_permalink: published.permalink || null,
     data_publicacao: (/* @__PURE__ */ new Date()).toISOString(),
+    instagram_published_at: (/* @__PURE__ */ new Date()).toISOString(),
+    instagram_publish_status: "PUBLICADO",
     atualizado_em: (/* @__PURE__ */ new Date()).toISOString(),
+    instagram_publish_error: null,
     erro_detalhe: void 0
   });
   await createHistoryRecord({
@@ -2167,15 +2711,19 @@ async function publishPost(post, author) {
       }, next.cliente_id || void 0);
     }
   }
+  try {
+    await syncInstagramPostInsights(next.cliente_id || "", next.id);
+  } catch (error) {
+    await addLog("Instagram API", "warn", "Falha ao sincronizar insights logo ap\xC3\xB3s a publica\xC3\xA7\xC3\xA3o.", {
+      postId: next.id,
+      error: maskError(error)
+    }, next.cliente_id || void 0);
+  }
   return next;
 }
 async function importGoogleDrivePosts(author, clienteId) {
   const folders = await ensureDriveFolders(clienteId);
-  const [images, videos] = await Promise.all([
-    listDriveFilesFromFolderForClient(clienteId, folders.imagensId),
-    listDriveFilesFromFolderForClient(clienteId, folders.videosId)
-  ]);
-  const files = [...images, ...videos];
+  const files = await listDriveFilesFromFolderForClient(clienteId, folders.entradaId);
   const existingPosts = await listPosts(clienteId || void 0);
   const existingDriveIds = new Set(existingPosts.map((post) => post.drive_file_id).filter(Boolean));
   const createdPosts = [];
@@ -2198,6 +2746,17 @@ async function importGoogleDrivePosts(author, clienteId) {
       criado_por_nome: author
     };
     const created = await createPostRecord(payload);
+    await upsertClienteDriveArquivo({
+      cliente_id: clienteId || "",
+      post_id: created.id,
+      drive_file_id: file.id,
+      drive_folder_id: folders.entradaId,
+      drive_file_name: file.name,
+      drive_mime_type: file.mimeType,
+      origem: "GOOGLE_DRIVE",
+      status: "IMPORTADO",
+      raw_payload: file
+    });
     await createHistoryRecord({
       cliente_id: created.cliente_id || null,
       post_id: created.id,
@@ -2210,8 +2769,9 @@ async function importGoogleDrivePosts(author, clienteId) {
     createdPosts.push(created);
   }
   await addLog("Google Drive", "success", "Importa\xC3\xA7\xC3\xA3o do Google Drive conclu\xC3\xADda.", {
-    imported: createdPosts.length
-  }, void 0);
+    imported: createdPosts.length,
+    folderId: folders.entradaId
+  }, clienteId || void 0);
   return createdPosts;
 }
 async function runScheduledPublications() {
@@ -2320,6 +2880,151 @@ function assertIsAdmin(user) {
 }
 function canEditClientSettings(user) {
   return user.perfil_publicacao === "SUPER_ADMIN" || user.perfil_publicacao === "ADMIN" || user.perfil_publicacao === "ADMIN_CLIENTE";
+}
+function assertCanManageGoogleDrive(user) {
+  if (user.perfil_publicacao !== "SUPER_ADMIN") {
+    throw new HttpError(403, `Usu\xC3\xA1rio '${user.email}' n\xC3\xA3o possui permiss\xC3\xA3o para gerenciar Google Drive.`);
+  }
+}
+async function getPostInsightResumo(postId) {
+  if (!await canUseSupabase()) {
+    return memoryStore.postInsightsResumo.find((item) => item.post_id === postId) || null;
+  }
+  try {
+    const items = await supabaseRequest(`post_insights_resumo?post_id=eq.${sanitizeId(postId)}&select=*`);
+    return items[0] || null;
+  } catch {
+    return memoryStore.postInsightsResumo.find((item) => item.post_id === postId) || null;
+  }
+}
+async function upsertPostInsightResumo(payload) {
+  const current = await getPostInsightResumo(payload.post_id);
+  const record = {
+    id: payload.id || current?.id || (0, import_crypto.randomUUID)(),
+    ...current,
+    ...payload
+  };
+  if (!await canUseSupabase()) {
+    const index = memoryStore.postInsightsResumo.findIndex((item) => item.post_id === payload.post_id);
+    if (index >= 0) memoryStore.postInsightsResumo[index] = record;
+    else memoryStore.postInsightsResumo.unshift(record);
+    return record;
+  }
+  const existing = await supabaseRequest(
+    `post_insights_resumo?post_id=eq.${sanitizeId(payload.post_id)}&select=*`
+  ).catch(() => []);
+  const result = existing.length ? await supabaseRequest(
+    `post_insights_resumo?post_id=eq.${sanitizeId(payload.post_id)}`,
+    {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(record)
+    }
+  ) : await supabaseRequest("post_insights_resumo", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify(record)
+  });
+  return result[0] || record;
+}
+function getGoogleOauthMissingEnv(config = getRuntimeConfig()) {
+  return [
+    !config.googleClientId ? "GOOGLE_CLIENT_ID" : "",
+    !config.googleClientSecret ? "GOOGLE_CLIENT_SECRET" : "",
+    !config.googleRedirectUri ? "GOOGLE_DRIVE_REDIRECT_URI/GOOGLE_REDIRECT_URI" : ""
+  ].filter(Boolean);
+}
+function getInstagramOauthMissingEnv(config = getRuntimeConfig()) {
+  return [
+    !config.instagramAppId ? "INSTAGRAM_APP_ID" : "",
+    !config.instagramAppSecret ? "INSTAGRAM_APP_SECRET" : "",
+    !config.instagramRedirectUri ? "INSTAGRAM_REDIRECT_URI" : ""
+  ].filter(Boolean);
+}
+function getMetaOauthMissingEnv(config = getRuntimeConfig()) {
+  return [
+    !config.metaAppId ? "META_APP_ID" : "",
+    !config.metaAppSecret ? "META_APP_SECRET" : "",
+    !config.metaRedirectUri ? "META_REDIRECT_URI" : ""
+  ].filter(Boolean);
+}
+async function buildInstagramAuthorizationUrl(input) {
+  const config = getRuntimeConfig();
+  const missing = input.provider === "INSTAGRAM_LOGIN" ? getInstagramOauthMissingEnv(config) : getMetaOauthMissingEnv(config);
+  if (missing.length > 0) {
+    throw new HttpError(400, `Faltam credenciais globais do OAuth da Meta/Instagram: ${missing.join(", ")}.`);
+  }
+  const stateValue = (0, import_crypto2.randomBytes)(24).toString("hex");
+  await createInstagramOauthState({
+    state: stateValue,
+    cliente_id: input.clienteId,
+    usuario_id: input.usuarioId || null,
+    provider: input.provider,
+    redirect_after_success: input.returnTo || null,
+    expires_at: new Date(Date.now() + 10 * 60 * 1e3).toISOString()
+  });
+  const url = input.provider === "INSTAGRAM_LOGIN" ? new URL("https://api.instagram.com/oauth/authorize") : new URL("https://www.facebook.com/v25.0/dialog/oauth");
+  const clientId = input.provider === "INSTAGRAM_LOGIN" ? config.instagramAppId : config.metaAppId;
+  const redirectUri = input.provider === "INSTAGRAM_LOGIN" ? config.instagramRedirectUri : config.metaRedirectUri;
+  const scope = input.provider === "INSTAGRAM_LOGIN" ? "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_insights" : "pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish,instagram_manage_insights";
+  url.searchParams.set("client_id", clientId);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", scope);
+  url.searchParams.set("state", stateValue);
+  return url.toString();
+}
+async function buildGoogleDriveAuthorizationUrl(input) {
+  const config = getRuntimeConfig();
+  const missing = getGoogleOauthMissingEnv(config);
+  if (missing.length > 0) {
+    throw new HttpError(400, `Faltam credenciais globais do app OAuth do Google: ${missing.join(", ")}.`);
+  }
+  const stateValue = (0, import_crypto2.randomBytes)(24).toString("hex");
+  await createGoogleDriveOauthState({
+    state: stateValue,
+    cliente_id: input.clienteId,
+    usuario_id: input.usuarioId || null,
+    redirect_after_success: input.returnTo || null,
+    expires_at: new Date(Date.now() + 10 * 60 * 1e3).toISOString()
+  });
+  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  url.searchParams.set("client_id", config.googleClientId);
+  url.searchParams.set("redirect_uri", config.googleRedirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("access_type", "offline");
+  url.searchParams.set("prompt", "consent");
+  url.searchParams.set("include_granted_scopes", "true");
+  url.searchParams.set("scope", "openid email profile https://www.googleapis.com/auth/drive.file");
+  url.searchParams.set("state", stateValue);
+  return url.toString();
+}
+async function applyGoogleDriveRootFolder(clienteId, rootFolderId, actingUser) {
+  const normalizedRoot = extractGoogleDriveFolderId(rootFolderId);
+  if (!normalizedRoot) {
+    throw new HttpError(400, "Informe um ID ou link de pasta do Google Drive v\xC3\xA1lido.");
+  }
+  const folder = await testDriveFolderAccessForClient(clienteId, normalizedRoot);
+  const integration = await updateClienteIntegracaoRecord(clienteId, {
+    google_drive_folder_id: folder.id,
+    google_drive_last_error: null
+  });
+  await setClienteGoogleDriveStatus(clienteId, "CONECTADO", {
+    connectedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    lastError: ""
+  });
+  await createParametroAuditoria({
+    escopo: "INTEGRACAO",
+    cliente_id: clienteId,
+    usuario_id: actingUser.id,
+    chave: "GOOGLE_DRIVE_FOLDER_ID",
+    categoria: "INTEGRACAO",
+    valor_anterior_mascarado: null,
+    valor_novo_mascarado: folder.id,
+    acao: "ALTERADO",
+    origem: "WEBAPP"
+  });
+  return integration;
 }
 function parseBody(value, fallback) {
   return value === void 0 ? fallback : value;
@@ -2837,20 +3542,20 @@ app.get("/api/media/:fileId", async (req, res) => {
     respondWithError(res, error, "Google Drive", "Falha ao servir m\xC3\xADdia do Google Drive.", 502);
   }
 });
-app.get("/api/google/oauth/start", (req, res) => {
-  const config = getRuntimeConfig();
-  if (!config.googleClientId || !config.googleClientSecret || !config.googleRedirectUri) {
-    const missing = [
-      !config.googleClientId ? "GOOGLE_CLIENT_ID" : "",
-      !config.googleClientSecret ? "GOOGLE_CLIENT_SECRET" : "",
-      !config.googleRedirectUri ? "GOOGLE_REDIRECT_URI" : ""
-    ].filter(Boolean);
+app.get("/api/google/oauth/start", async (req, res) => {
+  try {
+    const clienteId = trimEnv(String(req.query.cliente_id || ""));
+    const returnTo = trimEnv(String(req.query.return_to || "/"));
+    const url = await buildGoogleDriveAuthorizationUrl({ clienteId, returnTo });
+    res.redirect(url);
+  } catch (error) {
+    const missing = getGoogleOauthMissingEnv();
     const wantsJson = String(req.query.format || "").toLowerCase() === "json" || String(req.headers.accept || "").includes("application/json");
-    const message = `Faltam credenciais globais do app OAuth do Google: ${missing.join(", ")}.`;
+    const message = error instanceof Error ? error.message : "Falha ao iniciar OAuth do Google.";
     if (wantsJson) {
-      return res.status(400).json({ error: message, missing });
+      return res.status(error instanceof HttpError ? error.status : 400).json({ error: message, missing });
     }
-    return res.status(400).send(
+    return res.status(error instanceof HttpError ? error.status : 400).send(
       renderSimpleHtmlPage(
         "Google OAuth indisponivel",
         `<p>${escapeHtml(message)}</p>
@@ -2858,40 +3563,80 @@ app.get("/api/google/oauth/start", (req, res) => {
              <strong>O que configurar no ambiente</strong>
              <pre><code>GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
-GOOGLE_REDIRECT_URI=</code></pre>
+GOOGLE_DRIVE_REDIRECT_URI=</code></pre>
            </div>
            <div class="box">
              <strong>Redirect URI local sugerida</strong>
-             <p><code>http://localhost:3000/api/google/oauth/callback</code></p>
+             <p><code>http://localhost:3000/api/integrations/google-drive/callback</code></p>
            </div>`
       )
     );
   }
-  const clienteId = trimEnv(String(req.query.cliente_id || ""));
-  const returnTo = trimEnv(String(req.query.return_to || "/"));
-  const state = createSignedState({
-    clienteId,
-    returnTo,
-    createdAt: Date.now()
-  });
-  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  url.searchParams.set("client_id", config.googleClientId);
-  url.searchParams.set("redirect_uri", config.googleRedirectUri);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("access_type", "offline");
-  url.searchParams.set("prompt", "consent");
-  url.searchParams.set("include_granted_scopes", "true");
-  url.searchParams.set("scope", "https://www.googleapis.com/auth/drive");
-  url.searchParams.set("state", state);
-  res.redirect(url.toString());
+});
+app.post("/api/clientes/:clienteId/posts/:postId/publicar-instagram", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanApprovePosts(actingUser);
+    const post = await getPostById(req.params.postId, req.params.clienteId);
+    if (!post) {
+      return res.status(404).json({ error: "Post n\xC3\xA3o encontrado." });
+    }
+    const published = await publishPost(post, actingUser.nome);
+    res.json({ success: true, post: published });
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao publicar post no Instagram.", 400);
+  }
+});
+app.post("/api/clientes/:clienteId/posts/:postId/insights/sync", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    if (!canEditClientSettings(actingUser) && !canApprovePosts(actingUser)) {
+      throw new HttpError(403, "Usu\xC3\xA1rio sem permiss\xC3\xA3o para sincronizar insights.");
+    }
+    const resumo = await syncInstagramPostInsights(req.params.clienteId, req.params.postId);
+    res.json({ success: true, insight: resumo });
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao sincronizar insights do post.", 400);
+  }
+});
+app.get("/api/clientes/:clienteId/posts/:postId/insights", async (req, res) => {
+  try {
+    await getActingUserFromRequest(req);
+    const post = await getPostById(req.params.postId, req.params.clienteId);
+    if (!post) return res.status(404).json({ error: "Post n\xC3\xA3o encontrado." });
+    const insight = await getPostInsightResumo(req.params.postId);
+    res.json({ insight });
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao carregar insights do post.", 400);
+  }
+});
+app.get("/api/clientes/:clienteId/insights/dashboard", async (req, res) => {
+  try {
+    await getActingUserFromRequest(req);
+    const posts = await listPosts(req.params.clienteId);
+    const insights = await Promise.all(posts.map((post) => getPostInsightResumo(post.id)));
+    const items = insights.filter(Boolean);
+    const totals = items.reduce(
+      (acc, item) => {
+        acc.views += Number(item.views || 0);
+        acc.reach += Number(item.reach || 0);
+        acc.likes += Number(item.likes || 0);
+        acc.comments += Number(item.comments || 0);
+        acc.shares += Number(item.shares || 0);
+        acc.saved += Number(item.saved || 0);
+        acc.total_interactions += Number(item.total_interactions || 0);
+        return acc;
+      },
+      { views: 0, reach: 0, likes: 0, comments: 0, shares: 0, saved: 0, total_interactions: 0 }
+    );
+    res.json({ items, totals, count: items.length });
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao carregar dashboard de insights.", 400);
+  }
 });
 app.get("/api/google/oauth/status", async (_req, res) => {
   const config = getRuntimeConfig();
-  const missing = [
-    !config.googleClientId ? "GOOGLE_CLIENT_ID" : "",
-    !config.googleClientSecret ? "GOOGLE_CLIENT_SECRET" : "",
-    !config.googleRedirectUri ? "GOOGLE_REDIRECT_URI" : ""
-  ].filter(Boolean);
+  const missing = getGoogleOauthMissingEnv(config);
   res.json({
     ready: missing.length === 0,
     missing,
@@ -2899,13 +3644,26 @@ app.get("/api/google/oauth/status", async (_req, res) => {
   });
 });
 app.get("/api/google/oauth/callback", async (req, res) => {
+  const params = new URLSearchParams(req.query).toString();
+  res.redirect(`/api/integrations/google-drive/callback${params ? `?${params}` : ""}`);
+});
+app.get("/api/integrations/google-drive/callback", async (req, res) => {
   try {
     const config = getRuntimeConfig();
     const code = trimEnv(String(req.query.code || ""));
-    const rawState = trimEnv(String(req.query.state || ""));
-    const state = parseSignedState(rawState);
+    const stateValue = trimEnv(String(req.query.state || ""));
+    const state = await getGoogleDriveOauthState(stateValue);
     if (!code) {
       return res.status(400).json({ error: "Par\xC3\xA2metro code ausente." });
+    }
+    if (!state) {
+      return res.status(400).json({ error: "State OAuth do Google inv\xC3\xA1lido ou expirado." });
+    }
+    if (state.used_at) {
+      return res.status(400).json({ error: "State OAuth do Google j\xC3\xA1 utilizado." });
+    }
+    if (new Date(state.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: "State OAuth do Google expirado." });
     }
     if (!config.googleClientId || !config.googleClientSecret || !config.googleRedirectUri) {
       return res.status(400).json({ error: "Credenciais OAuth do Google incompletas." });
@@ -2944,59 +3702,32 @@ app.get("/api/google/oauth/callback", async (req, res) => {
         googleAccountEmail = "";
       }
     }
-    if (state?.clienteId) {
-      await ensureClienteSetup(state.clienteId);
-      if (refreshToken) {
-        await upsertClienteConfiguracao(state.clienteId, {
-          chave: "GOOGLE_REFRESH_TOKEN",
-          valor: null,
-          valor_encrypted: refreshToken,
-          tipo: "SECRET",
-          categoria: "INTEGRACAO",
-          descricao: "Refresh token da conta Google conectada ao cliente.",
-          sensivel: true,
-          editavel_por_cliente: false,
-          usar_padrao_sistema: false
-        });
-      }
-      if (googleAccountEmail) {
-        await upsertClienteConfiguracao(state.clienteId, {
-          chave: "GOOGLE_OAUTH_ACCOUNT_EMAIL",
-          valor: googleAccountEmail,
-          valor_encrypted: null,
-          tipo: "STRING",
-          categoria: "INTEGRACAO",
-          descricao: "Conta Google conectada ao cliente.",
-          sensivel: false,
-          editavel_por_cliente: false,
-          usar_padrao_sistema: false
-        });
-      }
-      await upsertClienteConfiguracao(state.clienteId, {
-        chave: "GOOGLE_OAUTH_CONNECTED_AT",
-        valor: (/* @__PURE__ */ new Date()).toISOString(),
-        valor_encrypted: null,
-        tipo: "STRING",
-        categoria: "INTEGRACAO",
-        descricao: "Data da ultima conexao Google do cliente.",
-        sensivel: false,
-        editavel_por_cliente: false,
-        usar_padrao_sistema: false
-      });
+    if (state.cliente_id) {
+      await ensureClienteSetup(state.cliente_id);
+      await setClienteGoogleDriveStatus(
+        state.cliente_id,
+        refreshToken ? "CONECTADO" : "ERRO",
+        {
+          token: refreshToken || void 0,
+          accountEmail: googleAccountEmail,
+          connectedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          lastError: refreshToken ? "" : "Google n\xC3\xA3o retornou refresh_token nesta concess\xC3\xA3o."
+        }
+      );
+      await markGoogleDriveOauthStateUsed(state.id, stateValue);
     }
     const envSnippet = [
       `GOOGLE_CLIENT_ID=${config.googleClientId}`,
       `GOOGLE_CLIENT_SECRET=${config.googleClientSecret}`,
       `GOOGLE_REFRESH_TOKEN=${refreshToken}`,
-      `GOOGLE_REDIRECT_URI=${config.googleRedirectUri}`,
-      `GOOGLE_DRIVE_FOLDER_ID=${config.googleDriveFolderId}`
+      `GOOGLE_DRIVE_REDIRECT_URI=${config.googleRedirectUri}`
     ].join("\n");
     const payload = {
       success: true,
-      message: state?.clienteId ? refreshToken ? "Conta Google conectada ao cliente com sucesso." : "O login Google concluiu, mas o refresh_token nao foi retornado. Revogue o acesso e repita a conexao." : refreshToken ? "Callback Google conclu\xC3\xADdo. Salve o refresh_token nas vari\xC3\xA1veis de ambiente." : "Callback Google conclu\xC3\xADdo, mas o Google n\xC3\xA3o retornou refresh_token. Revogue o acesso do app e repita com prompt=consent.",
+      message: state.cliente_id ? refreshToken ? "Conta Google conectada ao cliente com sucesso." : "O login Google concluiu, mas o refresh_token nao foi retornado. Revogue o acesso e repita a conexao." : refreshToken ? "Callback Google conclu\xC3\xADdo. Salve o refresh_token nas vari\xC3\xA1veis de ambiente." : "Callback Google conclu\xC3\xADdo, mas o Google n\xC3\xA3o retornou refresh_token. Revogue o acesso do app e repita com prompt=consent.",
       refreshToken,
       googleAccountEmail,
-      clienteId: state?.clienteId || "",
+      clienteId: state.cliente_id || "",
       envSnippet,
       tokens
     };
@@ -3029,7 +3760,7 @@ app.get("/api/google/oauth/callback", async (req, res) => {
     <main>
       <h1 class="${refreshToken ? "ok" : "warn"}">Google OAuth conclu\xC3\xADdo</h1>
       <p>${escapeHtml(payload.message)}</p>
-      ${state?.clienteId ? `<div class="box"><strong>Cliente</strong><p>${escapeHtml(state.clienteId)}</p></div>` : ""}
+      ${state.cliente_id ? `<div class="box"><strong>Cliente</strong><p>${escapeHtml(state.cliente_id)}</p></div>` : ""}
       ${googleAccountEmail ? `<div class="box"><strong>Conta Google</strong><p>${escapeHtml(googleAccountEmail)}</p></div>` : ""}
       <div class="box">
         <strong>Refresh token</strong>
@@ -3351,12 +4082,14 @@ app.get("/api/clientes/:clienteId/integracoes", async (req, res) => {
     }
     if (!await canUseSupabase()) {
       const local = { cliente_id: cliente.id, modo_operacao: "SIMULADOR" };
-      return res.json({ integracao: local });
+      return res.json({ integracao: sanitizeClienteIntegracaoForResponse(local) });
     }
     const records = await supabaseRequest(
       `cliente_integracoes?cliente_id=eq.${sanitizeId(cliente.id)}&select=*`
     );
-    res.json({ integracao: records[0] || { cliente_id: cliente.id, modo_operacao: "SIMULADOR" } });
+    res.json({
+      integracao: sanitizeClienteIntegracaoForResponse(records[0] || { cliente_id: cliente.id, modo_operacao: "SIMULADOR" })
+    });
   } catch (error) {
     respondWithError(res, error, "Clientes", "Falha ao buscar integra\xC3\xA7\xC3\xB5es do cliente.");
   }
@@ -3371,15 +4104,32 @@ app.patch("/api/clientes/:clienteId/integracoes", async (req, res) => {
     if (!cliente) {
       return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
     }
+    const manualInstagramToken = trimEnv(req.body.instagram_access_token ?? "");
     const payload = {
       cliente_id: cliente.id,
       google_drive_folder_id: req.body.google_drive_folder_id ?? null,
+      google_drive_entrada_folder_id: req.body.google_drive_entrada_folder_id ?? req.body.google_drive_imagens_folder_id ?? null,
+      google_drive_aprovacao_folder_id: req.body.google_drive_aprovacao_folder_id ?? null,
+      google_drive_aprovados_folder_id: req.body.google_drive_aprovados_folder_id ?? null,
       google_drive_imagens_folder_id: req.body.google_drive_imagens_folder_id ?? null,
       google_drive_videos_folder_id: req.body.google_drive_videos_folder_id ?? null,
       google_drive_publicados_folder_id: req.body.google_drive_publicados_folder_id ?? null,
-      instagram_access_token: req.body.instagram_access_token ?? null,
+      google_drive_rejeitados_folder_id: req.body.google_drive_rejeitados_folder_id ?? null,
+      google_drive_arquivados_folder_id: req.body.google_drive_arquivados_folder_id ?? null,
+      google_account_email: req.body.google_account_email ?? void 0,
+      google_drive_status: req.body.google_drive_status ?? void 0,
+      instagram_username: req.body.instagram_username ?? null,
+      instagram_access_token: null,
+      instagram_access_token_encrypted: manualInstagramToken ? encryptSecretValue(manualInstagramToken) : void 0,
+      instagram_token_status: manualInstagramToken ? req.body.instagram_token_status ?? "ATIVO_TESTE" : req.body.instagram_token_status ?? void 0,
+      instagram_token_expires_at: req.body.instagram_token_expires_at ?? null,
+      instagram_connected_at: manualInstagramToken ? (/* @__PURE__ */ new Date()).toISOString() : req.body.instagram_connected_at ?? null,
+      instagram_last_sync_at: req.body.instagram_last_sync_at ?? null,
+      instagram_connection_mode: req.body.instagram_connection_mode ?? (manualInstagramToken ? "MANUAL_TEST_TOKEN" : void 0),
+      instagram_webhook_enabled: req.body.instagram_webhook_enabled ?? false,
       instagram_user_id: req.body.instagram_user_id ?? null,
       instagram_business_id: req.body.instagram_business_id ?? null,
+      instagram_media_actor_id: req.body.instagram_media_actor_id ?? null,
       facebook_page_id: req.body.facebook_page_id ?? null,
       graph_api_version: req.body.graph_api_version ?? "v23.0",
       modo_operacao: req.body.modo_operacao === "REAL" ? "REAL" : "SIMULADOR",
@@ -3392,7 +4142,7 @@ app.patch("/api/clientes/:clienteId/integracoes", async (req, res) => {
         return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
       }
       await addLog("Clientes", "info", "Integra\xC3\xA7\xC3\xB5es do cliente atualizadas em modo local.", { clienteId: cliente.id }, cliente.id);
-      return res.json({ success: true, integracao: payload });
+      return res.json({ success: true, integracao: sanitizeClienteIntegracaoForResponse(payload) });
     }
     const existing = await supabaseRequest(
       `cliente_integracoes?cliente_id=eq.${sanitizeId(cliente.id)}&select=*`
@@ -3410,7 +4160,7 @@ app.patch("/api/clientes/:clienteId/integracoes", async (req, res) => {
       body: JSON.stringify(payload)
     });
     await addLog("Clientes", "info", "Integra\xC3\xA7\xC3\xB5es do cliente atualizadas.", { clienteId: cliente.id }, cliente.id);
-    res.json({ success: true, integracao: result[0] || payload });
+    res.json({ success: true, integracao: sanitizeClienteIntegracaoForResponse(result[0] || payload) });
   } catch (error) {
     respondWithError(res, error, "Clientes", "Falha ao atualizar integra\xC3\xA7\xC3\xB5es do cliente.");
   }
@@ -3813,16 +4563,67 @@ app.get("/api/clientes/:clienteId/logs/parametros", async (req, res) => {
     respondWithError(res, error, "Clientes", "Falha ao carregar auditoria do cliente.");
   }
 });
-app.post("/api/clientes/:clienteId/integracoes/google-drive/testar", async (req, res) => {
+app.post("/api/clientes/:clienteId/integracoes/google-drive/connect", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    if (!canEditClientSettings(actingUser)) {
-      throw new HttpError(403, "Usu\xC3\xA1rio sem permiss\xC3\xA3o para testar integra\xC3\xA7\xC3\xB5es.");
-    }
+    assertCanManageGoogleDrive(actingUser);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    await ensureClienteSetup(cliente.id);
+    const authorization_url = await buildGoogleDriveAuthorizationUrl({
+      clienteId: cliente.id,
+      usuarioId: actingUser.id,
+      returnTo: trimEnv(String(req.body?.return_to || "/"))
+    });
+    res.json({ success: true, authorization_url });
+  } catch (error) {
+    respondWithError(res, error, "Google Drive", "Falha ao iniciar conex\xC3\xA3o Google Drive.", 400);
+  }
+});
+app.post("/api/clientes/:clienteId/integracoes/google-drive/setup-folders", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
     const cliente = await getClienteById(req.params.clienteId);
     if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
     const integracao = await getClienteIntegracao(cliente.id);
-    const folderId = trimEnv(req.body?.google_drive_folder_id) || trimEnv(integracao?.google_drive_folder_id) || trimEnv(getRuntimeConfig().googleDriveFolderId);
+    const rootFolderId = extractGoogleDriveFolderId(req.body?.google_drive_folder_id || integracao?.google_drive_folder_id || "");
+    if (!rootFolderId) {
+      throw new HttpError(400, "Defina primeiro a pasta raiz do Google Drive do cliente.");
+    }
+    await applyGoogleDriveRootFolder(cliente.id, rootFolderId, actingUser);
+    const folders = await ensureDriveFolders(cliente.id);
+    await setClienteGoogleDriveStatus(cliente.id, "ATIVO", {
+      connectedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      lastError: ""
+    });
+    res.json({ success: true, folders });
+  } catch (error) {
+    respondWithError(res, error, "Google Drive", "Falha ao criar estrutura de pastas do Google Drive.", 400);
+  }
+});
+app.post("/api/clientes/:clienteId/integracoes/google-drive/use-existing-folder", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    const rootFolderId = trimEnv(String(req.body?.google_drive_folder_id || req.body?.folder_id || ""));
+    const integration = await applyGoogleDriveRootFolder(cliente.id, rootFolderId, actingUser);
+    const folder = await testDriveFolderAccessForClient(cliente.id, extractGoogleDriveFolderId(rootFolderId));
+    res.json({ success: true, integration, folder });
+  } catch (error) {
+    respondWithError(res, error, "Google Drive", "Falha ao usar a pasta existente do Google Drive.", 400);
+  }
+});
+app.post("/api/clientes/:clienteId/integracoes/google-drive/testar", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    const integracao = await getClienteIntegracao(cliente.id);
+    const folderId = extractGoogleDriveFolderId(req.body?.google_drive_folder_id || "") || trimEnv(integracao?.google_drive_folder_id) || trimEnv(getRuntimeConfig().googleDriveFolderId);
     const folder = await testDriveFolderAccessForClient(cliente.id, folderId);
     await createParametroAuditoria({
       escopo: "INTEGRACAO",
@@ -3839,6 +4640,350 @@ app.post("/api/clientes/:clienteId/integracoes/google-drive/testar", async (req,
   } catch (error) {
     respondWithError(res, error, "Google Drive", "Falha ao testar Google Drive.");
   }
+});
+app.post("/api/clientes/:clienteId/integracoes/google-drive/test", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    const integracao = await getClienteIntegracao(cliente.id);
+    const folderId = extractGoogleDriveFolderId(req.body?.google_drive_folder_id || "") || trimEnv(integracao?.google_drive_folder_id) || trimEnv(getRuntimeConfig().googleDriveFolderId);
+    const folder = await testDriveFolderAccessForClient(cliente.id, folderId);
+    res.json({ success: true, message: `Conex\xC3\xA3o com a pasta '${folder.name}' validada com sucesso.`, folder });
+  } catch (error) {
+    respondWithError(res, error, "Google Drive", "Falha ao testar Google Drive.", 400);
+  }
+});
+app.post("/api/clientes/:clienteId/integracoes/google-drive/disconnect", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
+    const cliente = await getClienteById(req.params.clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    await setClienteGoogleDriveStatus(cliente.id, "DESCONECTADO", {
+      token: "",
+      accountEmail: "",
+      connectedAt: "",
+      lastError: ""
+    });
+    const integracao = await updateClienteIntegracaoRecord(cliente.id, {
+      google_account_email: null,
+      google_drive_refresh_token_encrypted: null,
+      google_drive_token_expires_at: null,
+      google_drive_status: "DESCONECTADO",
+      google_drive_last_sync_at: null,
+      google_drive_last_error: null
+    });
+    await createParametroAuditoria({
+      escopo: "INTEGRACAO",
+      cliente_id: cliente.id,
+      usuario_id: actingUser.id,
+      chave: "GOOGLE_DRIVE_DISCONNECT",
+      categoria: "INTEGRACAO",
+      valor_anterior_mascarado: null,
+      valor_novo_mascarado: "DESCONECTADO",
+      acao: "ALTERADO",
+      origem: "WEBAPP"
+    });
+    res.json({ success: true, integracao });
+  } catch (error) {
+    respondWithError(res, error, "Google Drive", "Falha ao desconectar Google Drive.", 400);
+  }
+});
+app.get("/api/integrations/instagram/connect", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
+    const clienteId = trimEnv(String(req.query.clienteId || req.query.cliente_id || ""));
+    const cliente = await getClienteById(clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    const authorizationUrl = await buildInstagramAuthorizationUrl({
+      clienteId: cliente.id,
+      usuarioId: actingUser.id,
+      provider: "INSTAGRAM_LOGIN",
+      returnTo: trimEnv(String(req.query.return_to || "/"))
+    });
+    const wantsJson = String(req.query.format || "").toLowerCase() === "json" || String(req.headers.accept || "").includes("application/json");
+    if (wantsJson) {
+      return res.json({ success: true, authorization_url: authorizationUrl });
+    }
+    res.redirect(authorizationUrl);
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao iniciar conex\xC3\xA3o do Instagram.", 400);
+  }
+});
+app.get("/api/integrations/meta/connect", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
+    const clienteId = trimEnv(String(req.query.clienteId || req.query.cliente_id || ""));
+    const cliente = await getClienteById(clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    const authorizationUrl = await buildInstagramAuthorizationUrl({
+      clienteId: cliente.id,
+      usuarioId: actingUser.id,
+      provider: "FACEBOOK_LOGIN",
+      returnTo: trimEnv(String(req.query.return_to || "/"))
+    });
+    const wantsJson = String(req.query.format || "").toLowerCase() === "json" || String(req.headers.accept || "").includes("application/json");
+    if (wantsJson) {
+      return res.json({ success: true, authorization_url: authorizationUrl });
+    }
+    res.redirect(authorizationUrl);
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao iniciar conex\xC3\xA3o Meta.", 400);
+  }
+});
+app.get("/api/integrations/instagram/callback", async (req, res) => {
+  const code = trimEnv(String(req.query.code || ""));
+  const stateValue = trimEnv(String(req.query.state || ""));
+  const errorReason = trimEnv(String(req.query.error_reason || req.query.error || ""));
+  const errorDescription = trimEnv(String(req.query.error_description || ""));
+  try {
+    const state = await getInstagramOauthState(stateValue);
+    if (!state || state.provider !== "INSTAGRAM_LOGIN") {
+      throw new HttpError(400, "State do Instagram Login inv\xC3\xA1lido.");
+    }
+    if (state.used_at) {
+      throw new HttpError(400, "State do Instagram Login j\xC3\xA1 utilizado.");
+    }
+    if (new Date(state.expires_at).getTime() < Date.now()) {
+      throw new HttpError(400, "State do Instagram Login expirado.");
+    }
+    if (errorReason || !code) {
+      await addLog("Instagram API", "error", "Callback do Instagram retornou erro.", {
+        clienteId: state.cliente_id,
+        errorReason,
+        errorDescription
+      }, state.cliente_id);
+      return res.status(400).send(renderSimpleHtmlPage("Instagram n\xC3\xA3o conectado", `<p>${escapeHtml(errorDescription || errorReason || "Autoriza\xC3\xA7\xC3\xA3o cancelada.")}</p>`));
+    }
+    const tokenPayload = await exchangeInstagramCodeForToken(code);
+    const accessToken = trimEnv(String(tokenPayload.access_token || ""));
+    const instagramUserId = trimEnv(String(tokenPayload.user_id || ""));
+    await ensureClienteSetup(state.cliente_id);
+    const integration = await setClienteInstagramStatus(state.cliente_id, "ATIVO", {
+      instagram_access_token_encrypted: accessToken ? encryptSecretValue(accessToken) : null,
+      instagram_user_id: instagramUserId || null,
+      instagram_connected_at: (/* @__PURE__ */ new Date()).toISOString(),
+      instagram_last_sync_at: (/* @__PURE__ */ new Date()).toISOString(),
+      instagram_connection_mode: "INSTAGRAM_LOGIN"
+    });
+    await markInstagramOauthStateUsed(state.id, stateValue);
+    await addLog("Instagram API", "success", "Conta conectada via Instagram Login.", {
+      clienteId: state.cliente_id,
+      instagramUserId
+    }, state.cliente_id);
+    const payload = JSON.stringify({
+      type: "instaflow-instagram-oauth",
+      success: true,
+      clienteId: state.cliente_id,
+      mode: "INSTAGRAM_LOGIN"
+    }).replace(/</g, "\\u003c");
+    return res.send(`<!doctype html><html><body><script>window.opener&&window.opener.postMessage(${payload}, window.location.origin);window.close();</script><p>Conta conectada. Pode fechar esta janela.</p></body></html>`);
+  } catch (error) {
+    return res.status(error instanceof HttpError ? error.status : 400).send(renderSimpleHtmlPage("Falha no callback do Instagram", `<p>${escapeHtml(maskError(error))}</p>`));
+  }
+});
+app.get("/api/integrations/meta/callback", async (req, res) => {
+  const code = trimEnv(String(req.query.code || ""));
+  const stateValue = trimEnv(String(req.query.state || ""));
+  const errorReason = trimEnv(String(req.query.error_reason || req.query.error || ""));
+  const errorDescription = trimEnv(String(req.query.error_description || ""));
+  try {
+    const state = await getInstagramOauthState(stateValue);
+    if (!state || state.provider !== "FACEBOOK_LOGIN") {
+      throw new HttpError(400, "State do Facebook Login inv\xC3\xA1lido.");
+    }
+    if (state.used_at) {
+      throw new HttpError(400, "State do Facebook Login j\xC3\xA1 utilizado.");
+    }
+    if (new Date(state.expires_at).getTime() < Date.now()) {
+      throw new HttpError(400, "State do Facebook Login expirado.");
+    }
+    if (errorReason || !code) {
+      await addLog("Instagram API", "error", "Callback Meta retornou erro.", {
+        clienteId: state.cliente_id,
+        errorReason,
+        errorDescription
+      }, state.cliente_id);
+      return res.status(400).send(renderSimpleHtmlPage("Meta n\xC3\xA3o conectada", `<p>${escapeHtml(errorDescription || errorReason || "Autoriza\xC3\xA7\xC3\xA3o cancelada.")}</p>`));
+    }
+    const tokenPayload = await exchangeMetaCodeForToken(code);
+    const accessToken = trimEnv(String(tokenPayload.access_token || ""));
+    let pageId = "";
+    let businessId = "";
+    let username = "";
+    if (accessToken) {
+      const accounts = await metaGraphRequest(
+        `/me/accounts?access_token=${encodeURIComponent(accessToken)}`
+      ).catch(() => ({ data: [] }));
+      const firstPage = accounts.data?.[0];
+      if (firstPage?.id) {
+        pageId = firstPage.id;
+        const pageDetails = await metaGraphRequest(
+          `/${pageId}?fields=instagram_business_account{id,username}&access_token=${encodeURIComponent(firstPage.access_token || accessToken)}`
+        ).catch(() => ({}));
+        businessId = trimEnv(String(pageDetails.instagram_business_account?.id || ""));
+        username = trimEnv(String(pageDetails.instagram_business_account?.username || ""));
+      }
+    }
+    await ensureClienteSetup(state.cliente_id);
+    await setClienteInstagramStatus(state.cliente_id, "ATIVO", {
+      instagram_access_token_encrypted: accessToken ? encryptSecretValue(accessToken) : null,
+      instagram_business_id: businessId || null,
+      instagram_user_id: businessId || null,
+      instagram_username: username || null,
+      facebook_page_id: pageId || null,
+      instagram_connected_at: (/* @__PURE__ */ new Date()).toISOString(),
+      instagram_last_sync_at: (/* @__PURE__ */ new Date()).toISOString(),
+      instagram_connection_mode: "FACEBOOK_LOGIN"
+    });
+    await markInstagramOauthStateUsed(state.id, stateValue);
+    await addLog("Instagram API", "success", "Conta conectada via Facebook Login.", {
+      clienteId: state.cliente_id,
+      pageId,
+      businessId
+    }, state.cliente_id);
+    const payload = JSON.stringify({
+      type: "instaflow-instagram-oauth",
+      success: true,
+      clienteId: state.cliente_id,
+      mode: "FACEBOOK_LOGIN"
+    }).replace(/</g, "\\u003c");
+    return res.send(`<!doctype html><html><body><script>window.opener&&window.opener.postMessage(${payload}, window.location.origin);window.close();</script><p>Conta conectada. Pode fechar esta janela.</p></body></html>`);
+  } catch (error) {
+    return res.status(error instanceof HttpError ? error.status : 400).send(renderSimpleHtmlPage("Falha no callback Meta", `<p>${escapeHtml(maskError(error))}</p>`));
+  }
+});
+app.post("/api/integrations/instagram/disconnect", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
+    const clienteId = trimEnv(String(req.body?.clienteId || req.query.clienteId || ""));
+    const cliente = await getClienteById(clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    const integration = await setClienteInstagramStatus(cliente.id, "DESCONECTADO", {
+      instagram_access_token_encrypted: null,
+      instagram_username: null,
+      instagram_user_id: null,
+      instagram_business_id: null,
+      instagram_media_actor_id: null,
+      facebook_page_id: null
+    });
+    res.json({ success: true, integracao: sanitizeClienteIntegracaoForResponse(integration) });
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao desconectar Instagram.", 400);
+  }
+});
+app.post("/api/integrations/meta/disconnect", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
+    const clienteId = trimEnv(String(req.body?.clienteId || req.query?.clienteId || ""));
+    const cliente = await getClienteById(clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    const integration = await setClienteInstagramStatus(cliente.id, "DESCONECTADO", {
+      instagram_access_token_encrypted: null,
+      instagram_username: null,
+      instagram_user_id: null,
+      instagram_business_id: null,
+      instagram_media_actor_id: null,
+      facebook_page_id: null,
+      instagram_connection_mode: "FACEBOOK_LOGIN"
+    });
+    res.json({ success: true, integracao: sanitizeClienteIntegracaoForResponse(integration) });
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao desconectar Meta.", 400);
+  }
+});
+app.post("/api/integrations/instagram/test", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
+    const clienteId = trimEnv(String(req.body?.clienteId || req.query?.clienteId || ""));
+    const cliente = await getClienteById(clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    const context = await getClienteOperationalContext(cliente.id);
+    if (!context.instagramAccessToken || !getInstagramPublishingActorId(context)) {
+      throw new HttpError(400, "Cliente sem token Instagram configurado.");
+    }
+    const actorId = getInstagramPublishingActorId(context);
+    const actor = await instagramGraphRequest(
+      context,
+      `/${actorId}?fields=id,username,name&access_token=${encodeURIComponent(context.instagramAccessToken)}`
+    );
+    await setClienteInstagramStatus(cliente.id, context.instagramTokenStatus === "ATIVO_TESTE" ? "ATIVO_TESTE" : "ATIVO", {
+      instagram_username: trimEnv(String(actor.username || context.instagramUsername || "")) || null,
+      instagram_last_sync_at: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    res.json({
+      success: true,
+      message: `Conex\xC3\xA3o Instagram validada para ${String(actor.username || actor.name || actor.id || actorId)}.`,
+      actor
+    });
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao testar Instagram.", 400);
+  }
+});
+app.post("/api/integrations/meta/test", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertCanManageGoogleDrive(actingUser);
+    const clienteId = trimEnv(String(req.body?.clienteId || req.query?.clienteId || ""));
+    const cliente = await getClienteById(clienteId);
+    if (!cliente) return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
+    const context = await getClienteOperationalContext(cliente.id);
+    if (!context.instagramAccessToken || !getInstagramPublishingActorId(context)) {
+      throw new HttpError(400, "Cliente sem token Meta/Instagram configurado.");
+    }
+    const actorId = getInstagramPublishingActorId(context);
+    const actor = await instagramGraphRequest(
+      context,
+      `/${actorId}?fields=id,username,name&access_token=${encodeURIComponent(context.instagramAccessToken)}`
+    );
+    await setClienteInstagramStatus(cliente.id, context.instagramTokenStatus === "ATIVO_TESTE" ? "ATIVO_TESTE" : "ATIVO", {
+      instagram_username: trimEnv(String(actor.username || context.instagramUsername || "")) || null,
+      instagram_last_sync_at: (/* @__PURE__ */ new Date()).toISOString(),
+      instagram_connection_mode: "FACEBOOK_LOGIN"
+    });
+    res.json({
+      success: true,
+      message: `Conex\xC3\xA3o Meta validada para ${String(actor.username || actor.name || actor.id || actorId)}.`,
+      actor
+    });
+  } catch (error) {
+    respondWithError(res, error, "Instagram API", "Falha ao testar Meta.", 400);
+  }
+});
+app.get("/api/integrations/instagram/webhook", (req, res) => {
+  const verifyToken = trimEnv(String(req.query["hub.verify_token"] || ""));
+  const challenge = trimEnv(String(req.query["hub.challenge"] || ""));
+  const expected = trimEnv(process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || process.env.META_VERIFY_TOKEN);
+  if (verifyToken && challenge && verifyToken === expected) {
+    return res.status(200).send(challenge);
+  }
+  return res.status(403).send("forbidden");
+});
+app.post("/api/integrations/instagram/webhook", async (req, res) => {
+  await addLog("Instagram API", "info", "Webhook Instagram recebido.", req.body);
+  res.json({ success: true });
+});
+app.post("/api/integrations/meta/deauthorize", async (req, res) => {
+  await addLog("Instagram API", "warn", "Recebida solicita\xC3\xA7\xC3\xA3o de desautoriza\xC3\xA7\xC3\xA3o da Meta.", req.body);
+  res.json({ success: true });
+});
+app.post("/api/integrations/meta/data-deletion", async (req, res) => {
+  const confirmationCode = (0, import_crypto2.randomBytes)(12).toString("hex");
+  await addLog("Instagram API", "warn", "Recebida solicita\xC3\xA7\xC3\xA3o de exclus\xC3\xA3o de dados da Meta.", {
+    body: req.body,
+    confirmationCode
+  });
+  res.json({
+    url: `${getRuntimeConfig().appUrl}/meta/data-deletion-status?code=${confirmationCode}`,
+    confirmation_code: confirmationCode
+  });
 });
 app.post("/api/clientes/:clienteId/integracoes/meta/testar", async (req, res) => {
   try {

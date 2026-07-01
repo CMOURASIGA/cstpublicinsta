@@ -35,13 +35,34 @@ export interface ClienteUsuario {
 export interface ClienteIntegracao {
   id: string;
   cliente_id: string;
+  google_account_email?: string | null;
+  google_drive_access_token_encrypted?: string | null;
+  google_drive_refresh_token_encrypted?: string | null;
+  google_drive_token_expires_at?: string | null;
+  google_drive_status?: 'NAO_CONECTADO' | 'CONECTADO' | 'ERRO' | 'EXPIRADO' | 'DESCONECTADO' | 'ATIVO';
+  google_drive_last_sync_at?: string | null;
+  google_drive_last_error?: string | null;
   google_drive_folder_id?: string | null;
+  google_drive_entrada_folder_id?: string | null;
+  google_drive_aprovacao_folder_id?: string | null;
+  google_drive_aprovados_folder_id?: string | null;
+  google_drive_publicados_folder_id?: string | null;
+  google_drive_rejeitados_folder_id?: string | null;
+  google_drive_arquivados_folder_id?: string | null;
   google_drive_imagens_folder_id?: string | null;
   google_drive_videos_folder_id?: string | null;
-  google_drive_publicados_folder_id?: string | null;
+  instagram_username?: string | null;
   instagram_access_token?: string | null;
+  instagram_access_token_encrypted?: string | null;
+  instagram_token_status?: 'NAO_CONFIGURADO' | 'ATIVO' | 'ATIVO_TESTE' | 'EXPIRADO' | 'ERRO' | 'DESCONECTADO';
+  instagram_token_expires_at?: string | null;
+  instagram_connected_at?: string | null;
+  instagram_last_sync_at?: string | null;
+  instagram_connection_mode?: 'INSTAGRAM_LOGIN' | 'FACEBOOK_LOGIN' | 'MANUAL_TEST_TOKEN';
+  instagram_webhook_enabled?: boolean | null;
   instagram_user_id?: string | null;
   instagram_business_id?: string | null;
+  instagram_media_actor_id?: string | null;
   facebook_page_id?: string | null;
   graph_api_version?: string | null;
   modo_operacao?: 'SIMULADOR' | 'REAL';
@@ -92,6 +113,52 @@ export interface ParametroAuditoria {
   origem?: string | null;
   ip?: string | null;
   user_agent?: string | null;
+  criado_em: string;
+}
+
+export interface ClienteDriveArquivo {
+  id: string;
+  cliente_id: string;
+  post_id?: string | null;
+  drive_file_id: string;
+  drive_folder_id?: string | null;
+  drive_file_name?: string | null;
+  drive_mime_type?: string | null;
+  drive_web_view_link?: string | null;
+  storage_bucket?: string | null;
+  storage_path?: string | null;
+  storage_public_url?: string | null;
+  size_bytes?: number | null;
+  width?: number | null;
+  height?: number | null;
+  duration_seconds?: number | null;
+  origem: 'GOOGLE_DRIVE' | 'UPLOAD_DIRETO' | 'LINK_EXTERNO';
+  status: 'IMPORTADO' | 'EM_APROVACAO' | 'APROVADO' | 'PUBLICADO' | 'REJEITADO' | 'ARQUIVADO' | 'ERRO';
+  raw_payload?: Record<string, unknown> | null;
+  criado_em: string;
+  atualizado_em: string;
+}
+
+export interface GoogleDriveOauthState {
+  id: string;
+  state: string;
+  cliente_id: string;
+  usuario_id?: string | null;
+  redirect_after_success?: string | null;
+  expires_at: string;
+  used_at?: string | null;
+  criado_em: string;
+}
+
+export interface InstagramOauthState {
+  id: string;
+  state: string;
+  cliente_id: string;
+  usuario_id?: string | null;
+  provider: 'INSTAGRAM_LOGIN' | 'FACEBOOK_LOGIN';
+  redirect_after_success?: string | null;
+  expires_at: string;
+  used_at?: string | null;
   criado_em: string;
 }
 
@@ -152,6 +219,11 @@ export interface Post {
   creation_id?: string;
   status: PostStatus;
   instagram_post_id?: string;
+  instagram_media_id?: string | null;
+  instagram_permalink?: string | null;
+  instagram_published_at?: string | null;
+  instagram_publish_status?: 'NAO_PUBLICADO' | 'PUBLICANDO' | 'PUBLICADO' | 'ERRO_PUBLICACAO' | null;
+  instagram_publish_error?: string | null;
   data_agendamento?: string; // ISO String
   data_publicacao?: string; // ISO String
   criado_em: string;
@@ -175,6 +247,23 @@ export interface Post {
   thumbnail_drive_url?: string | null;
   thumbnail_time_sec?: number | null;
   video_edit_metadata?: VideoEditMetadata;
+}
+
+export interface PostInsightResumo {
+  id: string;
+  cliente_id: string;
+  post_id: string;
+  instagram_media_id: string;
+  views?: number | null;
+  reach?: number | null;
+  likes?: number | null;
+  comments?: number | null;
+  shares?: number | null;
+  saved?: number | null;
+  total_interactions?: number | null;
+  engagement_rate?: number | null;
+  last_sync_at?: string | null;
+  raw_payload?: Record<string, unknown> | null;
 }
 
 export interface HistoricoPost {
