@@ -514,6 +514,11 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
       );
       return;
     }
+    const popup = window.open('', 'instaflow-google-oauth', 'width=720,height=760,menubar=no,toolbar=no,location=yes,status=no');
+    if (!popup) {
+      setError('O navegador bloqueou o popup de login Google.');
+      return;
+    }
     try {
       const res = await apiFetch(`/api/clientes/${clientId}/integracoes/google-drive/connect`, {
         method: 'POST',
@@ -522,15 +527,9 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
       });
       const data = await res.json();
       if (!res.ok || !data.authorization_url) throw new Error(data.error || 'Falha ao iniciar login Google.');
-      const popup = window.open(
-        String(data.authorization_url),
-        'instaflow-google-oauth',
-        'width=720,height=760,menubar=no,toolbar=no,location=yes,status=no',
-      );
-      if (!popup) {
-        setError('O navegador bloqueou o popup de login Google.');
-      }
+      popup.location.href = String(data.authorization_url);
     } catch (err) {
+      popup.close();
       setError(err instanceof Error ? err.message : 'Falha ao iniciar login Google.');
     }
   };
@@ -599,6 +598,11 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
 
   const connectInstagram = async (mode: 'instagram' | 'meta') => {
     if (!clientId) return;
+    const popup = window.open('', 'instaflow-instagram-oauth', 'width=720,height=760,menubar=no,toolbar=no,location=yes,status=no');
+    if (!popup) {
+      setError('O navegador bloqueou o popup de login Instagram/Meta.');
+      return;
+    }
     try {
       const route = mode === 'instagram' ? '/api/integrations/instagram/connect' : '/api/integrations/meta/connect';
       const res = await apiFetch(
@@ -606,15 +610,9 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
       );
       const data = await res.json();
       if (!res.ok || !data.authorization_url) throw new Error(data.error || 'Falha ao iniciar login Instagram/Meta.');
-      const popup = window.open(
-        String(data.authorization_url),
-        'instaflow-instagram-oauth',
-        'width=720,height=760,menubar=no,toolbar=no,location=yes,status=no',
-      );
-      if (!popup) {
-        setError('O navegador bloqueou o popup de login Instagram/Meta.');
-      }
+      popup.location.href = String(data.authorization_url);
     } catch (err) {
+      popup.close();
       setError(err instanceof Error ? err.message : 'Falha ao iniciar login Instagram/Meta.');
     }
   };
