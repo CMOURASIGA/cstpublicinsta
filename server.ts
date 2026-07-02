@@ -3723,6 +3723,12 @@ function assertCanManageGoogleDrive(user: ActingUser) {
   }
 }
 
+function assertCanManageInstagram(user: ActingUser) {
+  if (user.perfil_publicacao !== "SUPER_ADMIN") {
+    throw new HttpError(403, `UsuÃ¡rio '${user.email}' nÃ£o possui permissÃ£o para gerenciar Instagram/Meta.`);
+  }
+}
+
 async function getPostInsightResumo(postId: string): Promise<PostInsightResumo | null> {
   if (!(await canUseSupabase())) {
     return memoryStore.postInsightsResumo.find((item) => item.post_id === postId) || null;
@@ -5743,7 +5749,7 @@ app.post("/api/clientes/:clienteId/integracoes/google-drive/disconnect", async (
 app.get("/api/integrations/instagram/connect", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    assertCanManageGoogleDrive(actingUser);
+    assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.query.clienteId || req.query.cliente_id || ""));
     const cliente = await getClienteById(clienteId);
     if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
@@ -5768,7 +5774,7 @@ app.get("/api/integrations/instagram/connect", async (req, res) => {
 app.get("/api/integrations/meta/connect", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    assertCanManageGoogleDrive(actingUser);
+    assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.query.clienteId || req.query.cliente_id || ""));
     const cliente = await getClienteById(clienteId);
     if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
@@ -5926,7 +5932,7 @@ app.get("/api/integrations/meta/callback", async (req, res) => {
 app.post("/api/integrations/instagram/disconnect", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    assertCanManageGoogleDrive(actingUser);
+    assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.body?.clienteId || req.query.clienteId || ""));
     const cliente = await getClienteById(clienteId);
     if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
@@ -5947,7 +5953,7 @@ app.post("/api/integrations/instagram/disconnect", async (req, res) => {
 app.post("/api/integrations/meta/disconnect", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    assertCanManageGoogleDrive(actingUser);
+    assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.body?.clienteId || req.query?.clienteId || ""));
     const cliente = await getClienteById(clienteId);
     if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
@@ -5969,7 +5975,7 @@ app.post("/api/integrations/meta/disconnect", async (req, res) => {
 app.post("/api/integrations/instagram/test", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    assertCanManageGoogleDrive(actingUser);
+    assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.body?.clienteId || req.query?.clienteId || ""));
     const cliente = await getClienteById(clienteId);
     if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
@@ -5999,7 +6005,7 @@ app.post("/api/integrations/instagram/test", async (req, res) => {
 app.post("/api/integrations/meta/test", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    assertCanManageGoogleDrive(actingUser);
+    assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.body?.clienteId || req.query?.clienteId || ""));
     const cliente = await getClienteById(clienteId);
     if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
