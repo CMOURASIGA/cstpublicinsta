@@ -2332,6 +2332,61 @@ async function ensureDriveFolders(clienteId) {
     arquivadosId
   };
 }
+function renderOauthPopupResultPage(title, message, payload) {
+  const safePayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+  return `<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 32px; }
+      main { max-width: 760px; margin: 0 auto; background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 24px; }
+      h1 { margin-top: 0; font-size: 24px; }
+      p { line-height: 1.5; }
+      .muted { color: #475569; font-size: 14px; }
+      .ok { color: #166534; }
+      .warn { color: #92400e; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 class="ok">${escapeHtml(title)}</h1>
+      <p>${escapeHtml(message)}</p>
+      <p class="muted" id="popup-status">Tentando devolver o resultado para a aplica\xE7\xE3o que abriu esta janela.</p>
+      <p class="muted">Se esta janela n\xE3o fechar automaticamente, finalize manualmente e volte para a aplica\xE7\xE3o.</p>
+    </main>
+    <script>
+      (function () {
+        const payload = ${safePayload};
+        const status = document.getElementById('popup-status');
+        let canAutoClose = false;
+        try {
+          if (window.opener && !window.opener.closed) {
+            window.opener.postMessage(payload, '*');
+            try {
+              canAutoClose = window.opener.location && window.opener.location.origin === window.location.origin;
+            } catch (_error) {
+              canAutoClose = false;
+            }
+          }
+        } catch (_error) {
+          canAutoClose = false;
+        }
+        if (canAutoClose) {
+          if (status) status.textContent = 'Conex\xE3o conclu\xEDda. Fechando a janela...';
+          window.close();
+          return;
+        }
+        if (status) {
+          status.textContent = 'Conex\xE3o conclu\xEDda, mas a janela foi mantida aberta porque o retorno aconteceu em outra origem.';
+        }
+      })();
+    </script>
+  </body>
+</html>`;
+}
 async function uploadFileToGoogleDrive(input, clienteId) {
   const folders = await ensureDriveFolders(clienteId);
   const parentId = folders.entradaId;
@@ -3731,62 +3786,16 @@ app.get("/api/integrations/google-drive/callback", async (req, res) => {
       envSnippet,
       tokens
     };
-    const popupMessage = JSON.stringify({
-      type: "instaflow-google-oauth",
-      ...payload
-    }).replace(/</g, "\\u003c");
     const wantsJson = String(req.query.format || "").toLowerCase() === "json" || String(req.headers.accept || "").includes("application/json");
     if (wantsJson) {
       return res.json(payload);
     }
-    return res.status(200).send(`<!doctype html>
-<html lang="pt-BR">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Google OAuth conclu\xC3\xADdo</title>
-    <style>
-      body { font-family: Arial, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 32px; }
-      main { max-width: 820px; margin: 0 auto; background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 24px; }
-      h1 { margin-top: 0; font-size: 24px; }
-      .ok { color: #166534; }
-      .warn { color: #92400e; }
-      pre { background: #0f172a; color: #e2e8f0; padding: 16px; border-radius: 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
-      code { font-family: Consolas, monospace; }
-      .box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin: 16px 0; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1 class="${refreshToken ? "ok" : "warn"}">Google OAuth conclu\xC3\xADdo</h1>
-      <p>${escapeHtml(payload.message)}</p>
-      ${state.cliente_id ? `<div class="box"><strong>Cliente</strong><p>${escapeHtml(state.cliente_id)}</p></div>` : ""}
-      ${googleAccountEmail ? `<div class="box"><strong>Conta Google</strong><p>${escapeHtml(googleAccountEmail)}</p></div>` : ""}
-      <div class="box">
-        <strong>Refresh token</strong>
-        <pre><code>${escapeHtml(refreshToken || "NAO_RECEBIDO")}</code></pre>
-      </div>
-      <div class="box">
-        <strong>Bloco para .env.local / Vercel</strong>
-        <pre><code>${escapeHtml(envSnippet)}</code></pre>
-      </div>
-      <div class="box">
-        <strong>Observa\xC3\xA7\xC3\xA3o</strong>
-        <p>Se o refresh token vier vazio, revogue o acesso do app Google autorizado anteriormente e repita o fluxo para for\xC3\xA7ar uma nova concess\xC3\xA3o offline.</p>
-      </div>
-    </main>
-    <script>
-      try {
-        if (window.opener) {
-          window.opener.postMessage(${popupMessage}, window.location.origin);
-          window.close();
-        }
-      } catch (error) {
-        console.error(error);
-      }
-    </script>
-  </body>
-</html>`);
+    return res.status(200).send(
+      renderOauthPopupResultPage("Google OAuth conclu\xC3\xADdo", payload.message, {
+        type: "instaflow-google-oauth",
+        ...payload
+      })
+    );
   } catch (error) {
     respondWithError(res, error, "Google Drive", "Falha no callback OAuth do Google.");
   }
@@ -4775,13 +4784,14 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
       clienteId: state.cliente_id,
       instagramUserId
     }, state.cliente_id);
-    const payload = JSON.stringify({
-      type: "instaflow-instagram-oauth",
-      success: true,
-      clienteId: state.cliente_id,
-      mode: "INSTAGRAM_LOGIN"
-    }).replace(/</g, "\\u003c");
-    return res.send(`<!doctype html><html><body><script>window.opener&&window.opener.postMessage(${payload}, window.location.origin);window.close();</script><p>Conta conectada. Pode fechar esta janela.</p></body></html>`);
+    return res.send(
+      renderOauthPopupResultPage("Instagram conectado", "Conta conectada via Instagram Login.", {
+        type: "instaflow-instagram-oauth",
+        success: true,
+        clienteId: state.cliente_id,
+        mode: "INSTAGRAM_LOGIN"
+      })
+    );
   } catch (error) {
     return res.status(error instanceof HttpError ? error.status : 400).send(renderSimpleHtmlPage("Falha no callback do Instagram", `<p>${escapeHtml(maskError(error))}</p>`));
   }
@@ -4846,13 +4856,14 @@ app.get("/api/integrations/meta/callback", async (req, res) => {
       pageId,
       businessId
     }, state.cliente_id);
-    const payload = JSON.stringify({
-      type: "instaflow-instagram-oauth",
-      success: true,
-      clienteId: state.cliente_id,
-      mode: "FACEBOOK_LOGIN"
-    }).replace(/</g, "\\u003c");
-    return res.send(`<!doctype html><html><body><script>window.opener&&window.opener.postMessage(${payload}, window.location.origin);window.close();</script><p>Conta conectada. Pode fechar esta janela.</p></body></html>`);
+    return res.send(
+      renderOauthPopupResultPage("Meta conectada", "Conta conectada via Facebook Login.", {
+        type: "instaflow-instagram-oauth",
+        success: true,
+        clienteId: state.cliente_id,
+        mode: "FACEBOOK_LOGIN"
+      })
+    );
   } catch (error) {
     return res.status(error instanceof HttpError ? error.status : 400).send(renderSimpleHtmlPage("Falha no callback Meta", `<p>${escapeHtml(maskError(error))}</p>`));
   }
