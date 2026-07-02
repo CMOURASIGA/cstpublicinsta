@@ -3718,13 +3718,13 @@ function canEditClientSettings(user: ActingUser): boolean {
 }
 
 function assertCanManageGoogleDrive(user: ActingUser) {
-  if (user.perfil_publicacao !== "SUPER_ADMIN") {
+  if (user.perfil_publicacao !== "SUPER_ADMIN" && user.perfil_publicacao !== "ADMIN") {
     throw new HttpError(403, `UsuÃ¡rio '${user.email}' nÃ£o possui permissÃ£o para gerenciar Google Drive.`);
   }
 }
 
 function assertCanManageInstagram(user: ActingUser) {
-  if (user.perfil_publicacao !== "SUPER_ADMIN") {
+  if (user.perfil_publicacao !== "SUPER_ADMIN" && user.perfil_publicacao !== "ADMIN") {
     throw new HttpError(403, `UsuÃ¡rio '${user.email}' nÃ£o possui permissÃ£o para gerenciar Instagram/Meta.`);
   }
 }

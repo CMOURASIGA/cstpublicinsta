@@ -2937,12 +2937,12 @@ function canEditClientSettings(user) {
   return user.perfil_publicacao === "SUPER_ADMIN" || user.perfil_publicacao === "ADMIN" || user.perfil_publicacao === "ADMIN_CLIENTE";
 }
 function assertCanManageGoogleDrive(user) {
-  if (user.perfil_publicacao !== "SUPER_ADMIN") {
+  if (user.perfil_publicacao !== "SUPER_ADMIN" && user.perfil_publicacao !== "ADMIN") {
     throw new HttpError(403, `Usu\xC3\xA1rio '${user.email}' n\xC3\xA3o possui permiss\xC3\xA3o para gerenciar Google Drive.`);
   }
 }
 function assertCanManageInstagram(user) {
-  if (user.perfil_publicacao !== "SUPER_ADMIN") {
+  if (user.perfil_publicacao !== "SUPER_ADMIN" && user.perfil_publicacao !== "ADMIN") {
     throw new HttpError(403, `Usu\xC3\xA1rio '${user.email}' n\xC3\xA3o possui permiss\xC3\xA3o para gerenciar Instagram/Meta.`);
   }
 }
