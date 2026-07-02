@@ -1262,6 +1262,77 @@ async function createParametroAuditoria(payload: Omit<ParametroAuditoria, "id" |
   }
 }
 
+async function listClienteIntegracoes(): Promise<ClienteIntegracao[]> {
+  if (!(await canUseSupabase())) {
+    return [...memoryStore.clienteIntegracoes];
+  }
+  try {
+    return await supabaseRequest<ClienteIntegracao[]>("cliente_integracoes?select=*");
+  } catch {
+    return [...memoryStore.clienteIntegracoes];
+  }
+}
+
+async function findClienteIntegracaoByInstagramIdentity(identity: string): Promise<ClienteIntegracao | null> {
+  const normalized = trimEnv(identity);
+  if (!normalized) return null;
+  const all = await listClienteIntegracoes();
+  return (
+    all.find(
+      (item) =>
+        item.instagram_user_id === normalized ||
+        item.instagram_business_id === normalized ||
+        item.instagram_username === normalized,
+    ) || null
+  );
+}
+
+async function handleInstagramDeauthorizeRequest(body: Record<string, unknown>) {
+  const clienteId = trimEnv(String(body?.clienteId || body?.cliente_id || ""));
+  const instagramIdentity = trimEnv(
+    String(body?.instagram_user_id || body?.user_id || body?.instagram_business_id || body?.instagram_username || ""),
+  );
+  const integracao = clienteId
+    ? await getClienteIntegracao(clienteId)
+    : await findClienteIntegracaoByInstagramIdentity(instagramIdentity);
+
+  if (integracao?.cliente_id) {
+    await setClienteInstagramStatus(integracao.cliente_id, "DESCONECTADO", {
+      instagram_access_token_encrypted: null,
+      instagram_username: integracao.instagram_username || null,
+      instagram_user_id: integracao.instagram_user_id || null,
+      instagram_business_id: integracao.instagram_business_id || null,
+      instagram_media_actor_id: null,
+      facebook_page_id: integracao.facebook_page_id || null,
+      instagram_token_expires_at: null,
+    });
+  }
+
+  await addLog(
+    "Instagram API",
+    "warn",
+    "Recebida solicitaÃ§Ã£o de desautorizaÃ§Ã£o do Instagram.",
+    {
+      body,
+      clienteId: integracao?.cliente_id || clienteId || null,
+      instagramIdentity: instagramIdentity || null,
+    },
+    integracao?.cliente_id || clienteId || undefined,
+  );
+}
+
+async function handleInstagramDataDeletionRequest(body: Record<string, unknown>) {
+  const confirmationCode = randomBytes(12).toString("hex");
+  await addLog("Instagram API", "warn", "Recebida solicitaÃ§Ã£o de exclusÃ£o de dados da Meta.", {
+    body,
+    confirmationCode,
+  });
+  return {
+    url: `${getRuntimeConfig().appUrl}/instagram/data-deletion-status?code=${confirmationCode}`,
+    confirmation_code: confirmationCode,
+  };
+}
+
 async function createGoogleDriveOauthState(
   payload: Omit<GoogleDriveOauthState, "id" | "criado_em">,
 ): Promise<GoogleDriveOauthState> {
@@ -6048,21 +6119,22 @@ app.post("/api/integrations/instagram/webhook", async (req, res) => {
   res.json({ success: true });
 });
 
+app.post("/api/integrations/instagram/deauthorize", async (req, res) => {
+  await handleInstagramDeauthorizeRequest((req.body || {}) as Record<string, unknown>);
+  res.json({ success: true });
+});
+
+app.post("/api/integrations/instagram/data-deletion", async (req, res) => {
+  res.json(await handleInstagramDataDeletionRequest((req.body || {}) as Record<string, unknown>));
+});
+
 app.post("/api/integrations/meta/deauthorize", async (req, res) => {
-  await addLog("Instagram API", "warn", "Recebida solicitaÃ§Ã£o de desautorizaÃ§Ã£o da Meta.", req.body);
+  await handleInstagramDeauthorizeRequest((req.body || {}) as Record<string, unknown>);
   res.json({ success: true });
 });
 
 app.post("/api/integrations/meta/data-deletion", async (req, res) => {
-  const confirmationCode = randomBytes(12).toString("hex");
-  await addLog("Instagram API", "warn", "Recebida solicitaÃ§Ã£o de exclusÃ£o de dados da Meta.", {
-    body: req.body,
-    confirmationCode,
-  });
-  res.json({
-    url: `${getRuntimeConfig().appUrl}/meta/data-deletion-status?code=${confirmationCode}`,
-    confirmation_code: confirmationCode,
-  });
+  res.json(await handleInstagramDataDeletionRequest((req.body || {}) as Record<string, unknown>));
 });
 
 app.post("/api/clientes/:clienteId/integracoes/meta/testar", async (req, res) => {

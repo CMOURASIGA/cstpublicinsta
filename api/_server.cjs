@@ -1009,6 +1009,64 @@ async function createParametroAuditoria(payload) {
     memoryStore.parametroAuditoria.unshift(record);
   }
 }
+async function listClienteIntegracoes() {
+  if (!await canUseSupabase()) {
+    return [...memoryStore.clienteIntegracoes];
+  }
+  try {
+    return await supabaseRequest("cliente_integracoes?select=*");
+  } catch {
+    return [...memoryStore.clienteIntegracoes];
+  }
+}
+async function findClienteIntegracaoByInstagramIdentity(identity) {
+  const normalized = trimEnv(identity);
+  if (!normalized) return null;
+  const all = await listClienteIntegracoes();
+  return all.find(
+    (item) => item.instagram_user_id === normalized || item.instagram_business_id === normalized || item.instagram_username === normalized
+  ) || null;
+}
+async function handleInstagramDeauthorizeRequest(body) {
+  const clienteId = trimEnv(String(body?.clienteId || body?.cliente_id || ""));
+  const instagramIdentity = trimEnv(
+    String(body?.instagram_user_id || body?.user_id || body?.instagram_business_id || body?.instagram_username || "")
+  );
+  const integracao = clienteId ? await getClienteIntegracao(clienteId) : await findClienteIntegracaoByInstagramIdentity(instagramIdentity);
+  if (integracao?.cliente_id) {
+    await setClienteInstagramStatus(integracao.cliente_id, "DESCONECTADO", {
+      instagram_access_token_encrypted: null,
+      instagram_username: integracao.instagram_username || null,
+      instagram_user_id: integracao.instagram_user_id || null,
+      instagram_business_id: integracao.instagram_business_id || null,
+      instagram_media_actor_id: null,
+      facebook_page_id: integracao.facebook_page_id || null,
+      instagram_token_expires_at: null
+    });
+  }
+  await addLog(
+    "Instagram API",
+    "warn",
+    "Recebida solicita\xC3\xA7\xC3\xA3o de desautoriza\xC3\xA7\xC3\xA3o do Instagram.",
+    {
+      body,
+      clienteId: integracao?.cliente_id || clienteId || null,
+      instagramIdentity: instagramIdentity || null
+    },
+    integracao?.cliente_id || clienteId || void 0
+  );
+}
+async function handleInstagramDataDeletionRequest(body) {
+  const confirmationCode = (0, import_crypto2.randomBytes)(12).toString("hex");
+  await addLog("Instagram API", "warn", "Recebida solicita\xC3\xA7\xC3\xA3o de exclus\xC3\xA3o de dados da Meta.", {
+    body,
+    confirmationCode
+  });
+  return {
+    url: `${getRuntimeConfig().appUrl}/instagram/data-deletion-status?code=${confirmationCode}`,
+    confirmation_code: confirmationCode
+  };
+}
 async function createGoogleDriveOauthState(payload) {
   const record = {
     id: (0, import_crypto.randomUUID)(),
@@ -4986,20 +5044,19 @@ app.post("/api/integrations/instagram/webhook", async (req, res) => {
   await addLog("Instagram API", "info", "Webhook Instagram recebido.", req.body);
   res.json({ success: true });
 });
+app.post("/api/integrations/instagram/deauthorize", async (req, res) => {
+  await handleInstagramDeauthorizeRequest(req.body || {});
+  res.json({ success: true });
+});
+app.post("/api/integrations/instagram/data-deletion", async (req, res) => {
+  res.json(await handleInstagramDataDeletionRequest(req.body || {}));
+});
 app.post("/api/integrations/meta/deauthorize", async (req, res) => {
-  await addLog("Instagram API", "warn", "Recebida solicita\xC3\xA7\xC3\xA3o de desautoriza\xC3\xA7\xC3\xA3o da Meta.", req.body);
+  await handleInstagramDeauthorizeRequest(req.body || {});
   res.json({ success: true });
 });
 app.post("/api/integrations/meta/data-deletion", async (req, res) => {
-  const confirmationCode = (0, import_crypto2.randomBytes)(12).toString("hex");
-  await addLog("Instagram API", "warn", "Recebida solicita\xC3\xA7\xC3\xA3o de exclus\xC3\xA3o de dados da Meta.", {
-    body: req.body,
-    confirmationCode
-  });
-  res.json({
-    url: `${getRuntimeConfig().appUrl}/meta/data-deletion-status?code=${confirmationCode}`,
-    confirmation_code: confirmationCode
-  });
+  res.json(await handleInstagramDataDeletionRequest(req.body || {}));
 });
 app.post("/api/clientes/:clienteId/integracoes/meta/testar", async (req, res) => {
   try {
