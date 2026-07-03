@@ -1109,6 +1109,10 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
               <p className="mt-1">3. Facebook Login + Página como fallback.</p>
             </div>
             <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button type="button" onClick={() => void saveIntegrations()} disabled={saving} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                Salvar integrações
+              </button>
               <button type="button" onClick={() => connectInstagram('instagram')} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                 <Plug className="h-3.5 w-3.5" />
                 Conectar Instagram
