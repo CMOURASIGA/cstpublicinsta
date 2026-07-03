@@ -3591,6 +3591,34 @@ async function publishPost(post: Post, author: string): Promise<Post> {
   return next;
 }
 
+async function restorePostToModerationAfterPublishFailure(
+  postId: string,
+  clienteId: string | null | undefined,
+  error: unknown,
+  postTitle?: string,
+  actorName?: string,
+): Promise<void> {
+  const detail = maskError(error);
+  await updatePostRecord(postId, {
+    status: "PENDENTE",
+    instagram_publish_status: "ERRO_PUBLICACAO",
+    instagram_publish_error: detail,
+    erro_detalhe: detail,
+    atualizado_em: new Date().toISOString(),
+    cliente_id: clienteId || undefined,
+  });
+
+  await createHistoryRecord({
+    cliente_id: clienteId || null,
+    post_id: postId,
+    post_titulo: postTitle || "Post",
+    usuario: actorName || "Sistema",
+    acao: "Falha na Publicacao",
+    observacao: detail,
+    criado_em: new Date().toISOString(),
+  }).catch(() => undefined);
+}
+
 async function importGoogleDrivePosts(author: string, clienteId?: string | null): Promise<Post[]> {
   const folders = await ensureDriveFolders(clienteId);
   const files = await listDriveFilesFromFolderForClient(clienteId, folders.entradaId);
@@ -4314,12 +4342,15 @@ app.post("/api/posts/:id/approve", async (req, res) => {
   } catch (error) {
     if (req.params.id) {
       try {
-        await updatePostRecord(req.params.id, {
-          status: "ERRO",
-          erro_detalhe: maskError(error),
-          atualizado_em: new Date().toISOString(),
-          cliente_id: await resolveClienteIdFromRequest(req),
-        });
+        const clienteId = await resolveClienteIdFromRequest(req);
+        const currentPost = await getPostById(req.params.id, clienteId);
+        await restorePostToModerationAfterPublishFailure(
+          req.params.id,
+          clienteId,
+          error,
+          currentPost?.titulo,
+          currentPost?.criado_por_nome,
+        );
       } catch {
         // Ignore secondary failure.
       }
@@ -4377,6 +4408,21 @@ app.post("/api/posts/aprovar", async (req, res) => {
     const published = await publishPost(effectivePost, actingUser.nome);
     return res.json({ success: true, post: published });
   } catch (error) {
+    if (req.body?.id) {
+      try {
+        const clienteId = await resolveClienteIdFromRequest(req);
+        const currentPost = await getPostById(req.body.id, clienteId);
+        await restorePostToModerationAfterPublishFailure(
+          req.body.id,
+          clienteId,
+          error,
+          currentPost?.titulo,
+          currentPost?.criado_por_nome,
+        );
+      } catch {
+        // Ignore secondary failure.
+      }
+    }
     respondWithError(res, error, "Instagram API", "Falha ao aprovar/publicar post.");
   }
 });
