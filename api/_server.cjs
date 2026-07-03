@@ -4177,7 +4177,8 @@ app.patch("/api/clientes/:clienteId/integracoes", async (req, res) => {
     if (!cliente) {
       return res.status(404).json({ error: "Cliente n\xC3\xA3o encontrado." });
     }
-    const manualInstagramToken = trimEnv(req.body.instagram_access_token ?? "");
+    const rawManualInstagramToken = trimEnv(req.body.instagram_access_token ?? "");
+    const manualInstagramToken = rawManualInstagramToken === "IG...****" || rawManualInstagramToken === "ENCRYPTED" ? "" : rawManualInstagramToken;
     const payload = {
       cliente_id: cliente.id,
       google_drive_folder_id: req.body.google_drive_folder_id ?? null,

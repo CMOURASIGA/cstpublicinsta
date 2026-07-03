@@ -156,6 +156,15 @@ function valueFor(item: ConfigItem, drafts: Drafts) {
   return drafts[item.chave] ?? String(item.valor_encrypted ?? item.valor ?? '');
 }
 
+function sanitizeIntegrationPayload(integrations: Partial<ClienteIntegracao>) {
+  const payload = { ...integrations } as Record<string, unknown>;
+  delete payload.instagram_access_token;
+  delete payload.instagram_access_token_encrypted;
+  delete payload.google_drive_access_token_encrypted;
+  delete payload.google_drive_refresh_token_encrypted;
+  return payload;
+}
+
 function Field({
   label,
   value,
@@ -477,7 +486,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
       const res = await apiFetch(`/api/clientes/${clientId}/integracoes`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(integrations),
+        body: JSON.stringify(sanitizeIntegrationPayload(integrations)),
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar integracoes.');
@@ -492,7 +501,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
 
   const saveIntegrationMode = async (mode: NonNullable<ClienteIntegracao['modo_operacao']>) => {
     if (!clientId) return;
-    const payload = { ...integrations, modo_operacao: mode };
+    const payload = sanitizeIntegrationPayload({ ...integrations, modo_operacao: mode });
     setIntegrations((current) => ({ ...current, modo_operacao: mode }));
     setSaving(true);
     setError('');
