@@ -1376,6 +1376,7 @@ async function getClienteOperationalContext(clienteId) {
   const instagramBusinessId = integrations?.instagram_business_id || (!clienteId ? runtime.instagramBusinessId : "");
   const instagramConnectionMode = integrations?.instagram_connection_mode || "INSTAGRAM_LOGIN";
   const instagramTokenStatus = integrations?.instagram_token_status || (instagramAccessToken ? "ATIVO" : "NAO_CONFIGURADO");
+  const instagramTokenExpiresAt = integrations?.instagram_token_expires_at || "";
   const graphApiVersion = integrations?.graph_api_version || runtime.graphApiVersion;
   const googleConfigured = Boolean(
     driveRootId && (runtime.googleClientEmail && runtime.googlePrivateKey || runtime.googleClientId && runtime.googleClientSecret && googleRefreshToken)
@@ -1397,6 +1398,7 @@ async function getClienteOperationalContext(clienteId) {
     graphApiVersion,
     instagramUsername,
     instagramAccessToken,
+    instagramTokenExpiresAt,
     instagramUserId,
     instagramBusinessId,
     instagramConnectionMode,
@@ -2560,9 +2562,37 @@ function getInstagramApiBaseUrl(context) {
   }
   return context.instagramGraphBaseUrl.replace(/\/$/, "") || "https://graph.facebook.com";
 }
+async function ensureInstagramAccessToken(context) {
+  if (!context.clienteId || context.instagramConnectionMode !== "INSTAGRAM_LOGIN" || !context.instagramAccessToken) {
+    return context.instagramAccessToken;
+  }
+  const expiresAt = context.instagramTokenExpiresAt ? new Date(context.instagramTokenExpiresAt).getTime() : 0;
+  const refreshThreshold = Date.now() + 7 * 24 * 60 * 60 * 1e3;
+  if (!expiresAt || expiresAt > refreshThreshold) {
+    return context.instagramAccessToken;
+  }
+  const refreshed = await refreshInstagramLongLivedAccessToken(context.instagramAccessToken);
+  const nextToken = trimEnv(refreshed.access_token || context.instagramAccessToken);
+  await updateClienteIntegracaoRecord(context.clienteId, {
+    instagram_access_token_encrypted: nextToken ? encryptSecretValue(nextToken) : null,
+    instagram_token_expires_at: resolveExpiresAtFromSeconds(refreshed.expires_in),
+    instagram_token_status: nextToken ? "ATIVO" : "ERRO",
+    instagram_last_sync_at: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  return nextToken;
+}
 async function instagramGraphRequest(context, resource, init) {
   const baseUrl = getInstagramApiBaseUrl(context);
-  const response = await fetch(`${baseUrl}/${context.graphApiVersion}${resource}`, init);
+  const usableToken = await ensureInstagramAccessToken(context);
+  const shouldReplaceToken = Boolean(context.instagramAccessToken && usableToken && context.instagramAccessToken !== usableToken);
+  const normalizedResource = shouldReplaceToken ? resource.replaceAll(context.instagramAccessToken, usableToken) : resource;
+  const nextInit = init ? {
+    ...init,
+    body: shouldReplaceToken && init.body instanceof URLSearchParams ? new URLSearchParams(
+      init.body.toString().replaceAll(context.instagramAccessToken, usableToken)
+    ) : shouldReplaceToken && typeof init.body === "string" ? init.body.replaceAll(context.instagramAccessToken, usableToken) : init.body
+  } : init;
+  const response = await fetch(`${baseUrl}/${context.graphApiVersion}${normalizedResource}`, nextInit);
   if (!response.ok) {
     const rawBody = await response.text();
     if (context.clienteId && (rawBody.includes('"code":190') || rawBody.includes('"code": 190') || rawBody.includes("Invalid OAuth access token"))) {
@@ -2672,6 +2702,33 @@ async function exchangeInstagramCodeForToken(code) {
     throw new Error(`Instagram OAuth ${response.status}: ${await response.text()}`);
   }
   return safeParseJson(response);
+}
+async function exchangeInstagramShortLivedForLongLivedToken(shortLivedToken) {
+  const config = getRuntimeConfig();
+  const url = new URL("https://graph.instagram.com/access_token");
+  url.searchParams.set("grant_type", "ig_exchange_token");
+  url.searchParams.set("client_secret", config.instagramAppSecret);
+  url.searchParams.set("access_token", shortLivedToken);
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    throw new Error(`Instagram long-lived token ${response.status}: ${await response.text()}`);
+  }
+  return safeParseJson(response);
+}
+async function refreshInstagramLongLivedAccessToken(currentToken) {
+  const url = new URL("https://graph.instagram.com/refresh_access_token");
+  url.searchParams.set("grant_type", "ig_refresh_token");
+  url.searchParams.set("access_token", currentToken);
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    throw new Error(`Instagram refresh token ${response.status}: ${await response.text()}`);
+  }
+  return safeParseJson(response);
+}
+function resolveExpiresAtFromSeconds(expiresIn) {
+  const seconds = Number(expiresIn || 0);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return new Date(Date.now() + seconds * 1e3).toISOString();
 }
 async function exchangeMetaCodeForToken(code) {
   const config = getRuntimeConfig();
@@ -4900,14 +4957,18 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
       return res.status(400).send(renderSimpleHtmlPage("Instagram n\xC3\xA3o conectado", `<p>${escapeHtml(errorDescription || errorReason || "Autoriza\xC3\xA7\xC3\xA3o cancelada.")}</p>`));
     }
     const tokenPayload = await exchangeInstagramCodeForToken(code);
-    const accessToken = trimEnv(String(tokenPayload.access_token || ""));
+    const shortLivedToken = trimEnv(String(tokenPayload.access_token || ""));
     const instagramUserId = trimEnv(String(tokenPayload.user_id || ""));
-    if (!accessToken) {
+    if (!shortLivedToken) {
       throw new HttpError(400, "Instagram Login nao retornou access_token para salvar a integracao.");
     }
+    const longLivedTokenPayload = await exchangeInstagramShortLivedForLongLivedToken(shortLivedToken);
+    const accessToken = trimEnv(String(longLivedTokenPayload.access_token || shortLivedToken));
+    const expiresAt = resolveExpiresAtFromSeconds(longLivedTokenPayload.expires_in);
     await ensureClienteSetup(state.cliente_id);
     const integration = await setClienteInstagramStatus(state.cliente_id, "ATIVO", {
       instagram_access_token_encrypted: accessToken ? encryptSecretValue(accessToken) : null,
+      instagram_token_expires_at: expiresAt,
       instagram_user_id: instagramUserId || null,
       instagram_connected_at: (/* @__PURE__ */ new Date()).toISOString(),
       instagram_last_sync_at: (/* @__PURE__ */ new Date()).toISOString(),
