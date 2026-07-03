@@ -152,6 +152,7 @@ interface ClienteOperationalContext {
   instagramTokenExpiresAt: string;
   instagramUserId: string;
   instagramBusinessId: string;
+  instagramMediaActorId: string;
   instagramConnectionMode: string;
   instagramTokenStatus: string;
   facebookPageId: string;
@@ -1706,6 +1707,7 @@ async function getClienteOperationalContext(clienteId?: string | null): Promise<
   const instagramUsername = integrations?.instagram_username || "";
   const instagramUserId = integrations?.instagram_user_id || (!clienteId ? runtime.instagramUserId : "");
   const instagramBusinessId = integrations?.instagram_business_id || (!clienteId ? runtime.instagramBusinessId : "");
+  const instagramMediaActorId = integrations?.instagram_media_actor_id || "";
   const instagramConnectionMode = integrations?.instagram_connection_mode || "INSTAGRAM_LOGIN";
   const instagramTokenStatus = integrations?.instagram_token_status || (instagramAccessToken ? "ATIVO" : "NAO_CONFIGURADO");
   const instagramTokenExpiresAt = integrations?.instagram_token_expires_at || "";
@@ -1742,6 +1744,7 @@ async function getClienteOperationalContext(clienteId?: string | null): Promise<
     instagramTokenExpiresAt,
     instagramUserId,
     instagramBusinessId,
+    instagramMediaActorId,
     instagramConnectionMode,
     instagramTokenStatus,
     facebookPageId: integrations?.facebook_page_id || runtime.facebookPageId,
@@ -3267,9 +3270,9 @@ async function metaGraphRequest<T>(resource: string, init?: RequestInit): Promis
 
 function getInstagramPublishingActorId(context: ClienteOperationalContext): string {
   if (context.instagramConnectionMode === "INSTAGRAM_LOGIN") {
-    return "me";
+    return context.instagramMediaActorId || context.instagramUserId || "me";
   }
-  return context.instagramUserId || context.instagramBusinessId;
+  return context.instagramMediaActorId || context.instagramBusinessId || context.instagramUserId;
 }
 
 function getInstagramApiBaseUrl(context: ClienteOperationalContext): string {
@@ -3596,7 +3599,11 @@ async function publishPost(post: Post, author: string): Promise<Post> {
   await addLog("Instagram API", "info", `Iniciando publicaÃ§Ã£o do post '${post.titulo}'.`, {
     postId: post.id,
     postType: post.tipo,
+    connectionMode: context.instagramConnectionMode,
     publishingActorId: getInstagramPublishingActorId(context),
+    instagramUserId: context.instagramUserId,
+    instagramBusinessId: context.instagramBusinessId,
+    instagramMediaActorId: context.instagramMediaActorId,
     graphBaseUrl: instagramApiBaseUrl,
   }, post.cliente_id || undefined);
 
@@ -6090,7 +6097,8 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
     const expiresAt = resolveExpiresAtFromSeconds(longLivedTokenPayload.expires_in);
     const profile: { user_id?: string; id?: string; username?: string } =
       await fetchInstagramLoginProfile(accessToken, getRuntimeConfig().graphApiVersion).catch(() => ({}));
-    const canonicalInstagramUserId = trimEnv(String(profile.user_id || profile.id || instagramUserId || ""));
+    const canonicalInstagramUserId = trimEnv(String(profile.user_id || instagramUserId || profile.id || ""));
+    const canonicalMediaActorId = trimEnv(String(profile.id || profile.user_id || instagramUserId || ""));
     const canonicalUsername = trimEnv(String(profile.username || ""));
 
     await ensureClienteSetup(state.cliente_id);
@@ -6098,6 +6106,7 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
       instagram_access_token_encrypted: accessToken ? encryptSecretValue(accessToken) : null,
       instagram_token_expires_at: expiresAt,
       instagram_user_id: canonicalInstagramUserId || null,
+      instagram_media_actor_id: canonicalMediaActorId || null,
       instagram_username: canonicalUsername || null,
       instagram_connected_at: new Date().toISOString(),
       instagram_last_sync_at: new Date().toISOString(),
@@ -6107,6 +6116,7 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
     await addLog("Instagram API", "success", "Conta conectada via Instagram Login.", {
       clienteId: state.cliente_id,
       instagramUserId: canonicalInstagramUserId || instagramUserId,
+      instagramMediaActorId: canonicalMediaActorId || null,
       instagramUsername: canonicalUsername || null,
     }, state.cliente_id).catch(() => undefined);
 
@@ -6193,6 +6203,7 @@ app.get("/api/integrations/meta/callback", async (req, res) => {
       instagram_access_token_encrypted: accessToken ? encryptSecretValue(accessToken) : null,
       instagram_business_id: businessId || null,
       instagram_user_id: businessId || null,
+      instagram_media_actor_id: businessId || null,
       instagram_username: username || null,
       facebook_page_id: pageId || null,
       instagram_connected_at: new Date().toISOString(),
