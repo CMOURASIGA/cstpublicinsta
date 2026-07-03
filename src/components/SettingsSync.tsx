@@ -281,13 +281,14 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
   const integrationConfigItems = useMemo(() => clientItems.filter((item) => item.categoria === 'INTEGRACAO'), [clientItems]);
   const googleConnectedEmail = String(integrationConfigItems.find((item) => item.chave === 'GOOGLE_OAUTH_ACCOUNT_EMAIL')?.valor || '');
   const googleConnectedAt = String(integrationConfigItems.find((item) => item.chave === 'GOOGLE_OAUTH_CONNECTED_AT')?.valor || '');
-  const googleDriveStatus = String(
-    integrationConfigItems.find((item) => item.chave === 'GOOGLE_DRIVE_STATUS')?.valor || integrations.google_drive_status || 'NAO_CONECTADO',
-  );
   const googleHasRefreshToken = Boolean(
     integrationConfigItems.find((item) => item.chave === 'GOOGLE_REFRESH_TOKEN')?.valor_encrypted ||
       integrationConfigItems.find((item) => item.chave === 'GOOGLE_REFRESH_TOKEN')?.valor,
   );
+  const googleDriveStatusRaw = String(
+    integrationConfigItems.find((item) => item.chave === 'GOOGLE_DRIVE_STATUS')?.valor || integrations.google_drive_status || 'NAO_CONECTADO',
+  );
+  const googleDriveStatus = googleHasRefreshToken && googleDriveStatusRaw === 'NAO_CONECTADO' ? 'CONECTADO' : googleDriveStatusRaw;
   const providerValue = String(clientDrafts.PROVEDOR_IA || iaItems.find((item) => item.chave === 'PROVEDOR_IA')?.valor || 'GEMINI').toUpperCase();
   const instagramStatus = String(integrations.instagram_token_status || 'NAO_CONFIGURADO');
   const instagramMode = String(integrations.instagram_connection_mode || 'INSTAGRAM_LOGIN');
