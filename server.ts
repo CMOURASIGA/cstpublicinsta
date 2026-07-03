@@ -3266,12 +3266,19 @@ function getInstagramPublishingActorId(context: ClienteOperationalContext): stri
   return context.instagramUserId || context.instagramBusinessId;
 }
 
+function getInstagramApiBaseUrl(context: ClienteOperationalContext): string {
+  if (context.instagramConnectionMode === "INSTAGRAM_LOGIN") {
+    return "https://graph.instagram.com";
+  }
+  return context.instagramGraphBaseUrl.replace(/\/$/, "") || "https://graph.facebook.com";
+}
+
 async function instagramGraphRequest<T>(
   context: ClienteOperationalContext,
   resource: string,
   init?: RequestInit,
 ): Promise<T> {
-  const baseUrl = context.instagramGraphBaseUrl.replace(/\/$/, "");
+  const baseUrl = getInstagramApiBaseUrl(context);
   const response = await fetch(`${baseUrl}/${context.graphApiVersion}${resource}`, init);
   if (!response.ok) {
     const rawBody = await response.text();
@@ -3493,11 +3500,12 @@ async function syncInstagramPostInsights(clienteId: string, postId: string): Pro
 
 async function publishPost(post: Post, author: string): Promise<Post> {
   const context = await getClienteOperationalContext(post.cliente_id || null);
+  const instagramApiBaseUrl = getInstagramApiBaseUrl(context);
   await addLog("Instagram API", "info", `Iniciando publicaÃ§Ã£o do post '${post.titulo}'.`, {
     postId: post.id,
     postType: post.tipo,
     publishingActorId: getInstagramPublishingActorId(context),
-    graphBaseUrl: context.instagramGraphBaseUrl,
+    graphBaseUrl: instagramApiBaseUrl,
   }, post.cliente_id || undefined);
 
   if (!(await canUseRealMode(post.cliente_id || null))) {

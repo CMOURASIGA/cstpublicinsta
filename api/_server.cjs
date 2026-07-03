@@ -2554,8 +2554,14 @@ async function metaGraphRequest(resource, init) {
 function getInstagramPublishingActorId(context) {
   return context.instagramUserId || context.instagramBusinessId;
 }
+function getInstagramApiBaseUrl(context) {
+  if (context.instagramConnectionMode === "INSTAGRAM_LOGIN") {
+    return "https://graph.instagram.com";
+  }
+  return context.instagramGraphBaseUrl.replace(/\/$/, "") || "https://graph.facebook.com";
+}
 async function instagramGraphRequest(context, resource, init) {
-  const baseUrl = context.instagramGraphBaseUrl.replace(/\/$/, "");
+  const baseUrl = getInstagramApiBaseUrl(context);
   const response = await fetch(`${baseUrl}/${context.graphApiVersion}${resource}`, init);
   if (!response.ok) {
     const rawBody = await response.text();
@@ -2747,11 +2753,12 @@ async function syncInstagramPostInsights(clienteId, postId) {
 }
 async function publishPost(post, author) {
   const context = await getClienteOperationalContext(post.cliente_id || null);
+  const instagramApiBaseUrl = getInstagramApiBaseUrl(context);
   await addLog("Instagram API", "info", `Iniciando publica\xC3\xA7\xC3\xA3o do post '${post.titulo}'.`, {
     postId: post.id,
     postType: post.tipo,
     publishingActorId: getInstagramPublishingActorId(context),
-    graphBaseUrl: context.instagramGraphBaseUrl
+    graphBaseUrl: instagramApiBaseUrl
   }, post.cliente_id || void 0);
   if (!await canUseRealMode(post.cliente_id || null)) {
     const simulated = await updatePostRecord(post.id, {
