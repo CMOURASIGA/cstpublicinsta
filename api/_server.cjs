@@ -2554,6 +2554,9 @@ async function metaGraphRequest(resource, init) {
   return safeParseJson(response);
 }
 function getInstagramPublishingActorId(context) {
+  if (context.instagramConnectionMode === "INSTAGRAM_LOGIN") {
+    return "me";
+  }
   return context.instagramUserId || context.instagramBusinessId;
 }
 function getInstagramApiBaseUrl(context) {

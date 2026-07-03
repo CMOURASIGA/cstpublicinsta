@@ -3266,6 +3266,9 @@ async function metaGraphRequest<T>(resource: string, init?: RequestInit): Promis
 }
 
 function getInstagramPublishingActorId(context: ClienteOperationalContext): string {
+  if (context.instagramConnectionMode === "INSTAGRAM_LOGIN") {
+    return "me";
+  }
   return context.instagramUserId || context.instagramBusinessId;
 }
 
