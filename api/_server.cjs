@@ -4968,7 +4968,7 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
     const accessToken = trimEnv(String(longLivedTokenPayload.access_token || shortLivedToken));
     const expiresAt = resolveExpiresAtFromSeconds(longLivedTokenPayload.expires_in);
     await ensureClienteSetup(state.cliente_id);
-    const integration = await setClienteInstagramStatus(state.cliente_id, "ATIVO", {
+    await setClienteInstagramStatus(state.cliente_id, "ATIVO", {
       instagram_access_token_encrypted: accessToken ? encryptSecretValue(accessToken) : null,
       instagram_token_expires_at: expiresAt,
       instagram_user_id: instagramUserId || null,
@@ -4976,11 +4976,11 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
       instagram_last_sync_at: (/* @__PURE__ */ new Date()).toISOString(),
       instagram_connection_mode: "INSTAGRAM_LOGIN"
     });
-    await markInstagramOauthStateUsed(state.id, stateValue);
+    await markInstagramOauthStateUsed(state.id, stateValue).catch(() => void 0);
     await addLog("Instagram API", "success", "Conta conectada via Instagram Login.", {
       clienteId: state.cliente_id,
       instagramUserId
-    }, state.cliente_id);
+    }, state.cliente_id).catch(() => void 0);
     return res.send(
       renderOauthPopupResultPage("Instagram conectado", "Conta conectada via Instagram Login.", {
         type: "instaflow-instagram-oauth",
@@ -5064,12 +5064,12 @@ app.get("/api/integrations/meta/callback", async (req, res) => {
       instagram_last_sync_at: (/* @__PURE__ */ new Date()).toISOString(),
       instagram_connection_mode: "FACEBOOK_LOGIN"
     });
-    await markInstagramOauthStateUsed(state.id, stateValue);
+    await markInstagramOauthStateUsed(state.id, stateValue).catch(() => void 0);
     await addLog("Instagram API", "success", "Conta conectada via Facebook Login.", {
       clienteId: state.cliente_id,
       pageId,
       businessId
-    }, state.cliente_id);
+    }, state.cliente_id).catch(() => void 0);
     return res.send(
       renderOauthPopupResultPage("Meta conectada", "Conta conectada via Facebook Login.", {
         type: "instaflow-instagram-oauth",
