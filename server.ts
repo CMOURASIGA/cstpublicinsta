@@ -3270,7 +3270,7 @@ async function metaGraphRequest<T>(resource: string, init?: RequestInit): Promis
 
 function getInstagramPublishingActorId(context: ClienteOperationalContext): string {
   if (context.instagramConnectionMode === "INSTAGRAM_LOGIN") {
-    return context.instagramMediaActorId || context.instagramUserId || "me";
+    return "me";
   }
   return context.instagramMediaActorId || context.instagramBusinessId || context.instagramUserId;
 }

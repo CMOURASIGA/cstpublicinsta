@@ -2557,7 +2557,7 @@ async function metaGraphRequest(resource, init) {
 }
 function getInstagramPublishingActorId(context) {
   if (context.instagramConnectionMode === "INSTAGRAM_LOGIN") {
-    return context.instagramMediaActorId || context.instagramUserId || "me";
+    return "me";
   }
   return context.instagramMediaActorId || context.instagramBusinessId || context.instagramUserId;
 }
