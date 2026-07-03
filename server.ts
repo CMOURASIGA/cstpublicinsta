@@ -3274,7 +3274,18 @@ async function instagramGraphRequest<T>(
   const baseUrl = context.instagramGraphBaseUrl.replace(/\/$/, "");
   const response = await fetch(`${baseUrl}/${context.graphApiVersion}${resource}`, init);
   if (!response.ok) {
-    throw new Error(`Instagram Graph ${response.status}: ${await response.text()}`);
+    const rawBody = await response.text();
+    if (
+      context.clienteId &&
+      (rawBody.includes('"code":190') ||
+        rawBody.includes('"code": 190') ||
+        rawBody.includes("Invalid OAuth access token"))
+    ) {
+      await setClienteInstagramStatus(context.clienteId, "ERRO", {
+        instagram_last_sync_at: new Date().toISOString(),
+      }).catch(() => undefined);
+    }
+    throw new Error(`Instagram Graph ${response.status}: ${rawBody}`);
   }
   return safeParseJson<T>(response);
 }
