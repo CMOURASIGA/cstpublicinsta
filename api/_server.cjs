@@ -2257,7 +2257,7 @@ function base64UrlEncode(value) {
 async function getGoogleAccessToken(clienteId) {
   const config = getRuntimeConfig();
   const context = await getClienteOperationalContext(clienteId);
-  const driveScope = "https://www.googleapis.com/auth/drive.file";
+  const driveScope = "https://www.googleapis.com/auth/drive";
   if (config.googleClientEmail && config.googlePrivateKey) {
     const now = Math.floor(Date.now() / 1e3);
     const header = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }));
@@ -3113,7 +3113,7 @@ async function buildGoogleDriveAuthorizationUrl(input) {
   url.searchParams.set("access_type", "offline");
   url.searchParams.set("prompt", "consent");
   url.searchParams.set("include_granted_scopes", "true");
-  url.searchParams.set("scope", "openid email profile https://www.googleapis.com/auth/drive.file");
+  url.searchParams.set("scope", "openid email profile https://www.googleapis.com/auth/drive");
   url.searchParams.set("state", stateValue);
   return url.toString();
 }
