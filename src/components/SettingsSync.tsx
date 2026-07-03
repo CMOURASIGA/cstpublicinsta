@@ -314,7 +314,9 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
       const systemAuditData = systemAuditRes ? await systemAuditRes.json().catch(() => ({ items: [] })) : { items: [] };
 
       const systemList = mergeDefaults(SYSTEM_DEFAULTS, (systemData.items || []) as SistemaConfiguracao[]);
-      const clientList = mergeDefaults([...IA_DEFAULTS, ...APPROVAL_DEFAULTS], (clientData.configuracoes || []) as ClienteConfiguracao[]);
+      const clientList = mergeDefaults([...IA_DEFAULTS, ...APPROVAL_DEFAULTS], (clientData.configuracoes || []) as ClienteConfiguracao[]).filter(
+        (item) => item.chave !== 'MODO_OPERACAO',
+      );
 
       setSystemItems(systemList);
       setSystemDrafts(Object.fromEntries(systemList.map((item) => [item.chave, String(item.valor_encrypted ?? item.valor ?? '')])));

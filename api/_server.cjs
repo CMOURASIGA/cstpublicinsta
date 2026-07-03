@@ -1360,6 +1360,7 @@ async function getClienteOperationalContext(clienteId) {
   const aiModel = await resolveConfigValue(clienteId || null, "MODELO_IA") || trimEnv(process.env.AI_DEFAULT_MODEL) || runtime.geminiModel;
   const aiApiKey = await resolveConfigValue(clienteId || null, "IA_API_KEY") || getFallbackAiApiKey(aiProvider);
   const googleRefreshToken = await resolveSecretConfigValue(clienteId || null, "GOOGLE_REFRESH_TOKEN") || runtime.googleRefreshToken;
+  const configuredOperationMode = (await resolveConfigValue(clienteId || null, "MODO_OPERACAO") || "").toUpperCase();
   const googleDriveStatus = await resolveConfigValue(clienteId || null, "GOOGLE_DRIVE_STATUS") || integrations?.google_drive_status || "NAO_CONECTADO";
   const googleAccountEmail = await resolveConfigValue(clienteId || null, "GOOGLE_OAUTH_ACCOUNT_EMAIL") || integrations?.google_account_email || "";
   const driveRootId = integrations?.google_drive_folder_id || trimEnv(process.env.GOOGLE_DRIVE_FOLDER_ID) || trimEnv(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID);
@@ -1380,7 +1381,7 @@ async function getClienteOperationalContext(clienteId) {
     driveRootId && (runtime.googleClientEmail && runtime.googlePrivateKey || runtime.googleClientId && runtime.googleClientSecret && googleRefreshToken)
   );
   const instagramConfigured = Boolean(instagramAccessToken && (instagramUserId || instagramBusinessId));
-  const modoOperacao = runtime.mode === "REAL" && runtime.appUrlIsPublic && integrations?.modo_operacao === "REAL" && instagramConfigured ? "REAL" : "SIMULATOR";
+  const modoOperacao = runtime.mode === "REAL" && runtime.appUrlIsPublic && (integrations?.modo_operacao === "REAL" || configuredOperationMode === "REAL") && instagramConfigured ? "REAL" : "SIMULATOR";
   return {
     clienteId: clienteId || null,
     driveRootId,
@@ -4231,6 +4232,17 @@ app.patch("/api/clientes/:clienteId/integracoes", async (req, res) => {
       headers: { Prefer: "return=representation" },
       body: JSON.stringify(payload)
     });
+    await upsertClienteConfiguracao(cliente.id, {
+      chave: "MODO_OPERACAO",
+      valor: payload.modo_operacao === "REAL" ? "REAL" : "SIMULADOR",
+      valor_encrypted: null,
+      tipo: "STRING",
+      categoria: "GERAL",
+      descricao: "Modo operacional do cliente.",
+      sensivel: false,
+      editavel_por_cliente: false,
+      usar_padrao_sistema: false
+    });
     await addLog("Clientes", "info", "Integra\xC3\xA7\xC3\xB5es do cliente atualizadas.", { clienteId: cliente.id }, cliente.id);
     res.json({ success: true, integracao: sanitizeClienteIntegracaoForResponse(result[0] || payload) });
   } catch (error) {
@@ -4480,6 +4492,11 @@ app.patch("/api/clientes/:clienteId/configuracoes", async (req, res) => {
         acao: "ALTERADO",
         origem: "WEBAPP"
       });
+      if (saved.chave === "MODO_OPERACAO") {
+        await updateClienteIntegracaoRecord(cliente.id, {
+          modo_operacao: String(saved.valor).toUpperCase() === "REAL" ? "REAL" : "SIMULADOR"
+        });
+      }
     }
     res.json({ success: true, items: updated });
   } catch (error) {

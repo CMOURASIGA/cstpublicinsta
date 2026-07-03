@@ -1675,6 +1675,7 @@ async function getClienteOperationalContext(clienteId?: string | null): Promise<
   const aiApiKey = (await resolveConfigValue(clienteId || null, "IA_API_KEY")) || getFallbackAiApiKey(aiProvider);
   const googleRefreshToken =
     (await resolveSecretConfigValue(clienteId || null, "GOOGLE_REFRESH_TOKEN")) || runtime.googleRefreshToken;
+  const configuredOperationMode = ((await resolveConfigValue(clienteId || null, "MODO_OPERACAO")) || "").toUpperCase();
   const googleDriveStatus =
     (await resolveConfigValue(clienteId || null, "GOOGLE_DRIVE_STATUS")) ||
     integrations?.google_drive_status ||
@@ -1716,7 +1717,7 @@ async function getClienteOperationalContext(clienteId?: string | null): Promise<
   const modoOperacao =
     runtime.mode === "REAL" &&
     runtime.appUrlIsPublic &&
-    integrations?.modo_operacao === "REAL" &&
+    (integrations?.modo_operacao === "REAL" || configuredOperationMode === "REAL") &&
     instagramConfigured
       ? "REAL"
       : "SIMULATOR";
@@ -5233,6 +5234,18 @@ app.patch("/api/clientes/:clienteId/integracoes", async (req, res) => {
           body: JSON.stringify(payload),
         });
 
+    await upsertClienteConfiguracao(cliente.id, {
+      chave: "MODO_OPERACAO",
+      valor: payload.modo_operacao === "REAL" ? "REAL" : "SIMULADOR",
+      valor_encrypted: null,
+      tipo: "STRING",
+      categoria: "GERAL",
+      descricao: "Modo operacional do cliente.",
+      sensivel: false,
+      editavel_por_cliente: false,
+      usar_padrao_sistema: false,
+    });
+
     await addLog("Clientes", "info", "IntegraÃ§Ãµes do cliente atualizadas.", { clienteId: cliente.id }, cliente.id);
     res.json({ success: true, integracao: sanitizeClienteIntegracaoForResponse((result[0] || payload) as ClienteIntegracao) });
   } catch (error) {
@@ -5512,6 +5525,12 @@ app.patch("/api/clientes/:clienteId/configuracoes", async (req, res) => {
         acao: "ALTERADO",
         origem: "WEBAPP",
       });
+
+      if (saved.chave === "MODO_OPERACAO") {
+        await updateClienteIntegracaoRecord(cliente.id, {
+          modo_operacao: String(saved.valor).toUpperCase() === "REAL" ? "REAL" : "SIMULADOR",
+        });
+      }
     }
 
     res.json({ success: true, items: updated });
