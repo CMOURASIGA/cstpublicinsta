@@ -1380,7 +1380,7 @@ async function getClienteOperationalContext(clienteId) {
     driveRootId && (runtime.googleClientEmail && runtime.googlePrivateKey || runtime.googleClientId && runtime.googleClientSecret && googleRefreshToken)
   );
   const instagramConfigured = Boolean(instagramAccessToken && (instagramUserId || instagramBusinessId));
-  const modoOperacao = runtime.mode === "REAL" && runtime.appUrlIsPublic && integrations?.modo_operacao === "REAL" && googleConfigured && instagramConfigured ? "REAL" : "SIMULATOR";
+  const modoOperacao = runtime.mode === "REAL" && runtime.appUrlIsPublic && integrations?.modo_operacao === "REAL" && instagramConfigured ? "REAL" : "SIMULATOR";
   return {
     clienteId: clienteId || null,
     driveRootId,

@@ -1717,7 +1717,6 @@ async function getClienteOperationalContext(clienteId?: string | null): Promise<
     runtime.mode === "REAL" &&
     runtime.appUrlIsPublic &&
     integrations?.modo_operacao === "REAL" &&
-    googleConfigured &&
     instagramConfigured
       ? "REAL"
       : "SIMULATOR";
