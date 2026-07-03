@@ -4937,8 +4937,10 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
   const stateValue = trimEnv(String(req.query.state || ""));
   const errorReason = trimEnv(String(req.query.error_reason || req.query.error || ""));
   const errorDescription = trimEnv(String(req.query.error_description || ""));
+  let resolvedState = null;
   try {
     const state = await getInstagramOauthState(stateValue);
+    resolvedState = state;
     if (!state || state.provider !== "INSTAGRAM_LOGIN") {
       throw new HttpError(400, "State do Instagram Login inv\xC3\xA1lido.");
     }
@@ -4988,7 +4990,24 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
       })
     );
   } catch (error) {
-    return res.status(error instanceof HttpError ? error.status : 400).send(renderSimpleHtmlPage("Falha no callback do Instagram", `<p>${escapeHtml(maskError(error))}</p>`));
+    if (resolvedState?.cliente_id) {
+      await setClienteInstagramStatus(resolvedState.cliente_id, "ERRO", {
+        instagram_last_sync_at: (/* @__PURE__ */ new Date()).toISOString()
+      }).catch(() => void 0);
+      await addLog("Instagram API", "error", "Falha no callback do Instagram Login.", {
+        clienteId: resolvedState.cliente_id,
+        error: maskError(error)
+      }, resolvedState.cliente_id).catch(() => void 0);
+    }
+    return res.status(error instanceof HttpError ? error.status : 400).send(
+      renderOauthPopupResultPage("Falha no callback do Instagram", maskError(error), {
+        type: "instaflow-instagram-oauth",
+        success: false,
+        clienteId: resolvedState?.cliente_id || null,
+        mode: "INSTAGRAM_LOGIN",
+        error: maskError(error)
+      })
+    );
   }
 });
 app.get("/api/integrations/meta/callback", async (req, res) => {

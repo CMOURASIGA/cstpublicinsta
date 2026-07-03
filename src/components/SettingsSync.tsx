@@ -304,6 +304,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
   const instagramMaskedToken = String(integrations.instagram_access_token || '');
   const instagramHasToken = Boolean(instagramMaskedToken && instagramMaskedToken !== 'null' && instagramMaskedToken !== 'undefined');
   const instagramConnected = (instagramStatus === 'ATIVO' || instagramStatus === 'ATIVO_TESTE') && instagramHasToken;
+  const instagramStatusLabel = instagramConnected ? instagramStatus : instagramStatus === 'ERRO' ? 'ERRO' : 'NAO_CONFIGURADO';
   const providerModels = getProviderModels(providerValue);
   const selectedModel = String(clientDrafts.MODELO_IA || iaItems.find((item) => item.chave === 'MODELO_IA')?.valor || '');
 
@@ -415,10 +416,12 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
-      const data = event.data as { type?: string; success?: boolean; message?: string } | null;
+      const data = event.data as { type?: string; success?: boolean; message?: string; error?: string } | null;
       if (!data || (data.type !== 'instaflow-google-oauth' && data.type !== 'instaflow-instagram-oauth')) return;
       if (data.success && data.message) {
         alert(data.message);
+      } else if (!data.success && data.error) {
+        setError(data.error);
       }
       void loadData();
     };
@@ -1116,7 +1119,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
                 <p className="mt-1 text-xs text-slate-500">Integração profissional por cliente com modo manual de teste e OAuth.</p>
               </div>
               <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold text-slate-700">
-                {instagramStatus}
+                {instagramStatusLabel}
               </span>
             </div>
             <div className={`mt-3 rounded-xl border p-4 text-xs ${instagramConnected ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
