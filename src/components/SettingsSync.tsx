@@ -302,6 +302,8 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
   const instagramStatus = String(integrations.instagram_token_status || 'NAO_CONFIGURADO');
   const instagramMode = String(integrations.instagram_connection_mode || 'INSTAGRAM_LOGIN');
   const instagramMaskedToken = String(integrations.instagram_access_token || '');
+  const instagramHasToken = Boolean(instagramMaskedToken && instagramMaskedToken !== 'null' && instagramMaskedToken !== 'undefined');
+  const instagramConnected = (instagramStatus === 'ATIVO' || instagramStatus === 'ATIVO_TESTE') && instagramHasToken;
   const providerModels = getProviderModels(providerValue);
   const selectedModel = String(clientDrafts.MODELO_IA || iaItems.find((item) => item.chave === 'MODELO_IA')?.valor || '');
 
@@ -1117,8 +1119,8 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
                 {instagramStatus}
               </span>
             </div>
-            <div className={`mt-3 rounded-xl border p-4 text-xs ${instagramStatus === 'ATIVO' || instagramStatus === 'ATIVO_TESTE' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
-              <p className="font-bold">{instagramStatus === 'ATIVO' || instagramStatus === 'ATIVO_TESTE' ? 'Instagram conectado' : 'Instagram não conectado'}</p>
+            <div className={`mt-3 rounded-xl border p-4 text-xs ${instagramConnected ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
+              <p className="font-bold">{instagramConnected ? 'Instagram conectado' : 'Instagram não conectado'}</p>
               <p className="mt-1 leading-relaxed">
                 Conta: {String(integrations.instagram_username || instagramManual.instagram_username || '@não informado')} | ID: {String(integrations.instagram_user_id || instagramManual.instagram_user_id || 'não informado')}
               </p>

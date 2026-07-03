@@ -1370,10 +1370,10 @@ async function getClienteOperationalContext(clienteId) {
   const drivePublishedId = integrations?.google_drive_publicados_folder_id || trimEnv(process.env.GOOGLE_DRIVE_PUBLISHED_FOLDER_ID);
   const driveRejeitadosId = integrations?.google_drive_rejeitados_folder_id || "";
   const driveArquivadosId = integrations?.google_drive_arquivados_folder_id || "";
-  const instagramAccessToken = decryptSecretValue(integrations?.instagram_access_token_encrypted) || integrations?.instagram_access_token || runtime.instagramAccessToken;
+  const instagramAccessToken = decryptSecretValue(integrations?.instagram_access_token_encrypted) || integrations?.instagram_access_token || (!clienteId ? runtime.instagramAccessToken : "");
   const instagramUsername = integrations?.instagram_username || "";
-  const instagramUserId = integrations?.instagram_user_id || runtime.instagramUserId;
-  const instagramBusinessId = integrations?.instagram_business_id || runtime.instagramBusinessId;
+  const instagramUserId = integrations?.instagram_user_id || (!clienteId ? runtime.instagramUserId : "");
+  const instagramBusinessId = integrations?.instagram_business_id || (!clienteId ? runtime.instagramBusinessId : "");
   const instagramConnectionMode = integrations?.instagram_connection_mode || "INSTAGRAM_LOGIN";
   const instagramTokenStatus = integrations?.instagram_token_status || (instagramAccessToken ? "ATIVO" : "NAO_CONFIGURADO");
   const graphApiVersion = integrations?.graph_api_version || runtime.graphApiVersion;
@@ -4895,6 +4895,9 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
     const tokenPayload = await exchangeInstagramCodeForToken(code);
     const accessToken = trimEnv(String(tokenPayload.access_token || ""));
     const instagramUserId = trimEnv(String(tokenPayload.user_id || ""));
+    if (!accessToken) {
+      throw new HttpError(400, "Instagram Login nao retornou access_token para salvar a integracao.");
+    }
     await ensureClienteSetup(state.cliente_id);
     const integration = await setClienteInstagramStatus(state.cliente_id, "ATIVO", {
       instagram_access_token_encrypted: accessToken ? encryptSecretValue(accessToken) : null,
