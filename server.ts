@@ -3488,6 +3488,20 @@ function resolveExpiresAtFromSeconds(expiresIn?: number | string | null): string
   return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
+async function fetchInstagramLoginProfile(
+  accessToken: string,
+  graphApiVersion: string,
+): Promise<{ user_id?: string; id?: string; username?: string }> {
+  const url = new URL(`https://graph.instagram.com/${graphApiVersion}/me`);
+  url.searchParams.set("fields", "user_id,username,id");
+  url.searchParams.set("access_token", accessToken);
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    throw new Error(`Instagram profile ${response.status}: ${await response.text()}`);
+  }
+  return safeParseJson<{ user_id?: string; id?: string; username?: string }>(response);
+}
+
 async function exchangeMetaCodeForToken(code: string): Promise<Record<string, unknown>> {
   const config = getRuntimeConfig();
   const url = new URL(`https://graph.facebook.com/${config.graphApiVersion}/oauth/access_token`);
@@ -6071,12 +6085,17 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
     const longLivedTokenPayload = await exchangeInstagramShortLivedForLongLivedToken(shortLivedToken);
     const accessToken = trimEnv(String(longLivedTokenPayload.access_token || shortLivedToken));
     const expiresAt = resolveExpiresAtFromSeconds(longLivedTokenPayload.expires_in);
+    const profile: { user_id?: string; id?: string; username?: string } =
+      await fetchInstagramLoginProfile(accessToken, getRuntimeConfig().graphApiVersion).catch(() => ({}));
+    const canonicalInstagramUserId = trimEnv(String(profile.user_id || profile.id || instagramUserId || ""));
+    const canonicalUsername = trimEnv(String(profile.username || ""));
 
     await ensureClienteSetup(state.cliente_id);
     await setClienteInstagramStatus(state.cliente_id, "ATIVO", {
       instagram_access_token_encrypted: accessToken ? encryptSecretValue(accessToken) : null,
       instagram_token_expires_at: expiresAt,
-      instagram_user_id: instagramUserId || null,
+      instagram_user_id: canonicalInstagramUserId || null,
+      instagram_username: canonicalUsername || null,
       instagram_connected_at: new Date().toISOString(),
       instagram_last_sync_at: new Date().toISOString(),
       instagram_connection_mode: "INSTAGRAM_LOGIN",
@@ -6084,7 +6103,8 @@ app.get("/api/integrations/instagram/callback", async (req, res) => {
     await markInstagramOauthStateUsed(state.id, stateValue).catch(() => undefined);
     await addLog("Instagram API", "success", "Conta conectada via Instagram Login.", {
       clienteId: state.cliente_id,
-      instagramUserId,
+      instagramUserId: canonicalInstagramUserId || instagramUserId,
+      instagramUsername: canonicalUsername || null,
     }, state.cliente_id).catch(() => undefined);
 
     return res.send(
