@@ -4560,7 +4560,13 @@ app.get("/api/clientes/:clienteId/configuracoes", async (req, res) => {
     const configs = await listClienteConfiguracoes(cliente.id);
     const integracoes = await getClienteIntegracao(cliente.id);
     const auditoria = await listParametroAuditoria(cliente.id);
-    res.json({ cliente, configuracoes: configs, integracoes, auditoria, user: actingUser });
+    res.json({
+      cliente,
+      configuracoes: configs,
+      integracoes: sanitizeClienteIntegracaoForResponse(integracoes),
+      auditoria,
+      user: actingUser
+    });
   } catch (error) {
     respondWithError(res, error, "Clientes", "Falha ao carregar configura\xC3\xA7\xC3\xB5es do cliente.");
   }
