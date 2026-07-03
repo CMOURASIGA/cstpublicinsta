@@ -488,6 +488,29 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
     }
   };
 
+  const saveIntegrationMode = async (mode: NonNullable<ClienteIntegracao['modo_operacao']>) => {
+    if (!clientId) return;
+    const payload = { ...integrations, modo_operacao: mode };
+    setIntegrations((current) => ({ ...current, modo_operacao: mode }));
+    setSaving(true);
+    setError('');
+    try {
+      const res = await apiFetch(`/api/clientes/${clientId}/integracoes`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, modo_operacao: mode }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar integracoes.');
+      await onSettingsSaved?.();
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao salvar integracoes.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const runTest = async (endpoint: string, name: string, payload: Record<string, unknown> = {}) => {
     setTesting(name);
     setError('');
@@ -1100,7 +1123,18 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
               <Field label="Access token manual de teste" value={String(instagramManual.instagram_access_token || '')} onChange={(value) => setInstagramManual((current) => ({ ...current, instagram_access_token: value }))} secret />
               <Field label="Facebook page ID" value={String(integrations.facebook_page_id || '')} onChange={(value) => setIntegrations((current) => ({ ...current, facebook_page_id: value }))} />
               <Field label="Graph API version" value={String(integrations.graph_api_version || '')} onChange={(value) => setIntegrations((current) => ({ ...current, graph_api_version: value }))} />
-              <Field label="Modo de operacao" value={String(integrations.modo_operacao || 'SIMULADOR')} onChange={(value) => setIntegrations((current) => ({ ...current, modo_operacao: value as ClienteIntegracao['modo_operacao'] }))} />
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">Modo de operacao</span>
+                <select
+                  value={String(integrations.modo_operacao || 'SIMULADOR')}
+                  onChange={(e) => void saveIntegrationMode(e.target.value as NonNullable<ClienteIntegracao['modo_operacao']>)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-700 outline-none focus:border-brand-primary disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
+                  disabled={saving}
+                >
+                  <option value="SIMULADOR">SIMULADOR</option>
+                  <option value="REAL">REAL</option>
+                </select>
+              </label>
             </div>
             <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-700">
               <p className="font-bold text-slate-800">Fluxos disponíveis</p>
