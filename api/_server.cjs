@@ -2826,15 +2826,18 @@ async function syncInstagramPostInsights(clienteId, postId) {
 async function publishPost(post, author) {
   const context = await getClienteOperationalContext(post.cliente_id || null);
   const instagramApiBaseUrl = getInstagramApiBaseUrl(context);
+  const publishingActorId = getInstagramPublishingActorId(context);
   await addLog("Instagram API", "info", `Iniciando publica\xC3\xA7\xC3\xA3o do post '${post.titulo}'.`, {
     postId: post.id,
     postType: post.tipo,
     connectionMode: context.instagramConnectionMode,
-    publishingActorId: getInstagramPublishingActorId(context),
+    publishingActorId,
     instagramUserId: context.instagramUserId,
     instagramBusinessId: context.instagramBusinessId,
     instagramMediaActorId: context.instagramMediaActorId,
-    graphBaseUrl: instagramApiBaseUrl
+    graphBaseUrl: instagramApiBaseUrl,
+    graphApiVersion: context.graphApiVersion,
+    hasToken: Boolean(context.instagramAccessToken)
   }, post.cliente_id || void 0);
   if (!await canUseRealMode(post.cliente_id || null)) {
     const simulated = await updatePostRecord(post.id, {
@@ -2863,10 +2866,24 @@ async function publishPost(post, author) {
     }, post.cliente_id || void 0);
     return simulated;
   }
+  await addLog("Instagram API", "info", "Debug antes de criar container", {
+    postId: post.id,
+    clienteId: post.cliente_id,
+    connectionMode: context.instagramConnectionMode,
+    actorId: publishingActorId,
+    instagramUserId: context.instagramUserId,
+    instagramBusinessId: context.instagramBusinessId,
+    instagramMediaActorId: context.instagramMediaActorId,
+    graphBaseUrl: instagramApiBaseUrl,
+    graphApiVersion: context.graphApiVersion,
+    hasToken: Boolean(context.instagramAccessToken)
+  }, post.cliente_id || void 0);
   const creationId = await createInstagramContainer(post);
   await addLog("Instagram API", "info", "Container de m\xC3\xADdia criado na Meta.", {
     postId: post.id,
-    creationId
+    creationId,
+    actorId: publishingActorId,
+    graphBaseUrl: instagramApiBaseUrl
   }, post.cliente_id || void 0);
   await updatePostRecord(post.id, {
     creation_id: creationId,
@@ -2931,6 +2948,10 @@ async function restorePostToModerationAfterPublishFailure(postId, clienteId, err
     instagram_publish_status: "ERRO_PUBLICACAO",
     instagram_publish_error: detail,
     erro_detalhe: detail,
+    creation_id: null,
+    instagram_post_id: null,
+    instagram_media_id: null,
+    instagram_permalink: null,
     atualizado_em: (/* @__PURE__ */ new Date()).toISOString(),
     cliente_id: clienteId || void 0
   });
