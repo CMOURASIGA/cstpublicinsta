@@ -1,0 +1,39 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="92" y1="76" x2="424" y2="428" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0C2C58"/>
+      <stop offset="1" stop-color="#133D73"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="160" y1="138" x2="350" y2="350" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#173F79"/>
+      <stop offset="1" stop-color="#0F3161"/>
+    </linearGradient>
+    <filter id="shadow" x="148" y="114" width="216" height="216" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="10"/>
+      <feGaussianBlur stdDeviation="10"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.02 0 0 0 0 0.06 0 0 0 0 0.14 0 0 0 0.42 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_2"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_2" result="shape"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="128" fill="#061D3D"/>
+  <rect x="56" y="56" width="400" height="400" rx="104" fill="url(#bg)" stroke="rgba(255,255,255,0.06)" stroke-width="8"/>
+
+  <g filter="url(#shadow)">
+    <rect x="180" y="142" width="152" height="152" rx="34" fill="url(#tile)" stroke="#214B86" stroke-width="6"/>
+  </g>
+
+  <path d="M218 218C218 201.431 231.431 188 248 188H264C280.569 188 294 201.431 294 218V232C294 248.569 280.569 262 264 262H246C238.268 262 232 268.268 232 276V290H210V218H218Z" fill="#F7FAFD"/>
+  <path d="M245 188H264C280.569 188 294 201.431 294 218C294 234.569 280.569 248 264 248H245V188Z" fill="#F7FAFD"/>
+  <path d="M232 290H262V309C262 316.18 256.18 322 249 322C241.82 322 236 316.18 236 309V300C236 294.477 240.477 290 246 290H232Z" fill="#F7FAFD"/>
+
+  <circle cx="307" cy="198" r="12" fill="#F59E0B"/>
+  <circle cx="326" cy="183" r="9" fill="#16B8A6"/>
+  <circle cx="323" cy="236" r="11" fill="#F7FAFD"/>
+  <circle cx="239" cy="315" r="8" fill="#F7FAFD"/>
+  <circle cx="312" cy="285" r="7" fill="#F7FAFD"/>
+</svg>

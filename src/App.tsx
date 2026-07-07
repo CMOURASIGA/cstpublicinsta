@@ -1,19 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import Dashboard from './components/Dashboard';
 import AdminDashboard from './components/AdminDashboard';
-import CreatePost from './components/CreatePost';
+import CreatePostEntry from './components/CreatePostEntry';
 import ApproveList from './components/ApproveList';
 import HistoryList from './components/HistoryList';
 import ClientsManagement from './components/ClientsManagement';
-import ClientUsersManagement from './components/ClientUsersManagement';
+import ClientUsersManagement from './components/ClientUsersManagementV2';
 import SettingsSync from './components/SettingsSync';
-import SimulatorLogs from './components/SimulatorLogs';
+import SimulatorLogs from './components/SimulatorLogsV2';
 import LoginScreen from './components/LoginScreen';
 import { Cliente, PerfilPublicacao, Usuario } from './types';
 import { apiFetch } from './lib/api';
 import { getSupabaseClient } from './lib/supabase';
-import { LOGOS, PLATFORM_NAME } from './lib/branding';
+import { LOGOS } from './lib/branding';
 import { getStoredActiveClient, getStoredActiveClientId, setStoredActiveClient } from './lib/client-store';
+import { ActiveClientProvider } from './context/ActiveClientContext';
 import {
   LayoutDashboard,
   PlusCircle,
@@ -26,6 +27,42 @@ import {
   Users,
   Building2,
 } from 'lucide-react';
+
+type AppScreen = 'dashboard' | 'clientes' | 'criar' | 'aprovacao' | 'historico' | 'config' | 'usuarios' | 'logs';
+
+function getScreenFromPath(pathname: string): AppScreen {
+  if (pathname.startsWith('/admin/clientes')) return 'clientes';
+  if (pathname.startsWith('/app/postagens/nova')) return 'criar';
+  if (pathname.startsWith('/app/postagens')) return 'aprovacao';
+  if (pathname.startsWith('/app/historico')) return 'historico';
+  if (pathname.startsWith('/app/integracoes')) return 'config';
+  if (pathname.startsWith('/app/usuarios')) return 'usuarios';
+  if (pathname.startsWith('/admin/logs') || pathname.startsWith('/app/logs')) return 'logs';
+  return 'dashboard';
+}
+
+function getPathForScreen(screen: AppScreen, isSuperAdmin: boolean): string {
+  switch (screen) {
+    case 'dashboard':
+      return isSuperAdmin ? '/admin/dashboard' : '/app/dashboard';
+    case 'clientes':
+      return '/admin/clientes';
+    case 'criar':
+      return '/app/postagens/nova';
+    case 'aprovacao':
+      return '/app/postagens';
+    case 'historico':
+      return '/app/historico';
+    case 'config':
+      return '/app/integracoes';
+    case 'usuarios':
+      return '/app/usuarios';
+    case 'logs':
+      return isSuperAdmin ? '/admin/logs' : '/app/logs';
+    default:
+      return '/app/dashboard';
+  }
+}
 
 function getRole(user: Usuario | null): PerfilPublicacao {
   if (!user) return 'CRIADOR';
@@ -42,7 +79,9 @@ function getRoleLabel(role: PerfilPublicacao) {
 }
 
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState<string>('dashboard');
+  const [currentScreen, setCurrentScreen] = useState<AppScreen>(() =>
+    typeof window === 'undefined' ? 'dashboard' : getScreenFromPath(window.location.pathname),
+  );
   const [currentUser, setCurrentUser] = useState<Usuario | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [profileDropdown, setProfileDropdown] = useState(false);
@@ -58,6 +97,38 @@ export default function App() {
   const isSuperAdmin = currentRole === 'SUPER_ADMIN';
   const canSeeClients = isSuperAdmin;
   const mobileNavColumns = 4 + Number(canSeeClients) + Number(canCreate) + Number(canApprove) + Number(canManageUsers);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const suffix =
+      currentScreen === 'dashboard'
+        ? isSuperAdmin
+          ? 'Visão Global'
+          : 'Dashboard'
+        : currentScreen === 'criar'
+          ? 'Criar Postagem'
+          : currentScreen === 'clientes'
+            ? 'Clientes'
+            : currentScreen === 'aprovacao'
+              ? 'Moderação'
+              : currentScreen === 'historico'
+                ? 'Histórico'
+                : currentScreen === 'config'
+                  ? 'Parâmetros'
+                  : currentScreen === 'usuarios'
+                    ? 'Usuários'
+                    : 'Logs';
+    document.title = `Consult Flow${suffix ? ` | ${suffix}` : ''}`;
+  }, [currentScreen, isSuperAdmin]);
+
+  const navigateToScreen = (screen: AppScreen, replace = false) => {
+    setCurrentScreen(screen);
+    if (typeof window === 'undefined') return;
+    const nextPath = getPathForScreen(screen, isSuperAdmin);
+    if (window.location.pathname === nextPath) return;
+    const method = replace ? 'replaceState' : 'pushState';
+    window.history[method]({}, '', nextPath);
+  };
 
   const loadClients = async () => {
     try {
@@ -146,7 +217,7 @@ export default function App() {
 
           if (!nextSession) {
             setCurrentUser(null);
-            setCurrentScreen('dashboard');
+            navigateToScreen('dashboard', true);
             setProfileDropdown(false);
             setPendingBadge(0);
             return;
@@ -179,6 +250,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const handlePopState = () => {
+      setCurrentScreen(getScreenFromPath(window.location.pathname));
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (authLoading || !currentUser) return;
+    navigateToScreen(currentScreen, true);
+  }, [authLoading, currentUser?.id, currentScreen, isSuperAdmin]);
+
+  useEffect(() => {
     if (!currentUser) return;
 
     fetchBadgeCount();
@@ -201,7 +288,7 @@ export default function App() {
     await supabase.auth.signOut();
     setCurrentUser(null);
     setProfileDropdown(false);
-    setCurrentScreen('dashboard');
+    navigateToScreen('dashboard', true);
     setActiveClient(null);
     setStoredActiveClient(null);
   };
@@ -222,9 +309,9 @@ export default function App() {
     switch (currentScreen) {
       case 'dashboard':
         return isSuperAdmin ? (
-          <AdminDashboard onNavigate={(screen) => setCurrentScreen(screen)} />
+          <AdminDashboard onNavigate={(screen) => navigateToScreen(screen as AppScreen)} />
         ) : (
-          <Dashboard onNavigate={(screen) => setCurrentScreen(screen)} onSimulateTick={handleSimulateTick} />
+          <Dashboard onNavigate={(screen) => navigateToScreen(screen as AppScreen)} onSimulateTick={handleSimulateTick} />
         );
       case 'clientes':
         if (!isSuperAdmin) {
@@ -239,7 +326,7 @@ export default function App() {
           <ClientsManagement
             onSelectClient={(client) => {
               handleClientChange(client.id);
-              setCurrentScreen('config');
+              navigateToScreen('config');
             }}
           />
         );
@@ -255,7 +342,7 @@ export default function App() {
           );
         }
         return (
-          <CreatePost
+          <CreatePostEntry
             currentUser={currentUser}
             onPostCreated={() => {
               fetchBadgeCount();
@@ -278,7 +365,7 @@ export default function App() {
             currentUser={currentUser}
             onWorkflowComplete={() => {
               fetchBadgeCount();
-              setCurrentScreen('dashboard');
+              navigateToScreen('dashboard');
             }}
           />
         );
@@ -320,11 +407,11 @@ export default function App() {
               <h2 className="text-xl font-bold font-sans text-slate-800">Terminal do Simulador</h2>
               <p className="mt-1 text-xs text-slate-500">Veja detalhadamente a comunicação de back-end REST e automação de agendamentos.</p>
             </div>
-            <SimulatorLogs onSimulateTick={handleSimulateTick} />
+            <SimulatorLogs onSimulateTick={handleSimulateTick} activeClient={activeClient} isGlobalView={isSuperAdmin} />
           </div>
         );
       default:
-        return <Dashboard />;
+        return <Dashboard onNavigate={(screen) => navigateToScreen(screen as AppScreen)} onSimulateTick={handleSimulateTick} />;
     }
   };
 
@@ -346,22 +433,37 @@ export default function App() {
                 : 'Logs';
 
   return (
+    <ActiveClientProvider
+      value={{
+        activeClient,
+        availableClients,
+        setActiveClient: (client) => {
+          setActiveClient(client);
+          setStoredActiveClient(client);
+          setPendingBadge(0);
+        },
+      }}
+    >
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans text-slate-800">
-      <aside className="hidden md:flex w-64 bg-brand-dark text-slate-300 flex-col shrink-0 border-r border-brand-darker/60 h-screen sticky top-0 z-30">
-        <div className="p-6 flex items-center gap-3 border-b border-brand-darker/40 shrink-0">
-            <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center bg-brand-primary shadow-md shrink-0 border border-brand-primary/30">
-              <img src={LOGOS.squareMark} className="w-full h-full object-contain p-0.5" alt="Logo" referrerPolicy="no-referrer" />
+      <aside className="hidden md:flex w-72 bg-brand-dark text-slate-300 flex-col shrink-0 border-r border-brand-darker/60 h-screen sticky top-0 z-30">
+        <div className="px-5 pt-5 pb-4 shrink-0 border-b border-brand-darker/40">
+          <button
+            type="button"
+            onClick={() => navigateToScreen('dashboard')}
+            className="mx-auto flex w-full max-w-[230px] flex-col items-center rounded-[28px] border border-white/10 bg-white px-5 py-5 text-center shadow-[0_18px_40px_rgba(0,0,0,0.18)] transition-transform hover:-translate-y-0.5"
+            aria-label="Ir para o painel inicial"
+          >
+            <div className="flex h-32 w-32 items-center justify-center rounded-[30px] bg-slate-50 shadow-inner shadow-slate-300/40">
+              <img src={LOGOS.squareMark} className="h-24 w-24 object-contain" alt="Consult Flow" referrerPolicy="no-referrer" />
             </div>
-            <div className="overflow-hidden">
-            <span className="text-white font-bold text-base tracking-tight block">{PLATFORM_NAME}</span>
-            <span className="text-[10px] text-brand-primary font-medium block truncate">Instagram Control Center</span>
-          </div>
+            <span className="mt-4 text-[12px] font-semibold uppercase tracking-[0.2em] text-slate-600">Consult Flow</span>
+          </button>
         </div>
 
-        <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto">
+        <nav className="flex-1 px-4 py-5 space-y-1 overflow-y-auto">
           <button
-            onClick={() => setCurrentScreen('dashboard')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
+            onClick={() => navigateToScreen('dashboard')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide text-left transition-all ${
               currentScreen === 'dashboard' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
@@ -371,8 +473,8 @@ export default function App() {
 
           {canSeeClients && (
             <button
-              onClick={() => setCurrentScreen('clientes')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
+              onClick={() => navigateToScreen('clientes')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide text-left transition-all ${
                 currentScreen === 'clientes' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
               }`}
             >
@@ -383,8 +485,8 @@ export default function App() {
 
           {canCreate && (
             <button
-              onClick={() => setCurrentScreen('criar')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
+              onClick={() => navigateToScreen('criar')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide text-left transition-all ${
                 currentScreen === 'criar' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
               }`}
             >
@@ -395,8 +497,8 @@ export default function App() {
 
           {canApprove && (
             <button
-              onClick={() => setCurrentScreen('aprovacao')}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide transition-all ${
+              onClick={() => navigateToScreen('aprovacao')}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
                 currentScreen === 'aprovacao' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
               }`}
             >
@@ -413,8 +515,8 @@ export default function App() {
           )}
 
           <button
-            onClick={() => setCurrentScreen('historico')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
+            onClick={() => navigateToScreen('historico')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide text-left transition-all ${
               currentScreen === 'historico' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
@@ -424,8 +526,8 @@ export default function App() {
 
           {canEditSettings && (
             <button
-              onClick={() => setCurrentScreen('config')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
+              onClick={() => navigateToScreen('config')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide text-left transition-all ${
                 currentScreen === 'config' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
               }`}
             >
@@ -436,8 +538,8 @@ export default function App() {
 
           {canManageUsers && (
             <button
-              onClick={() => setCurrentScreen('usuarios')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
+              onClick={() => navigateToScreen('usuarios')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide text-left transition-all ${
                 currentScreen === 'usuarios' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
               }`}
             >
@@ -447,8 +549,8 @@ export default function App() {
           )}
 
           <button
-            onClick={() => setCurrentScreen('logs')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide text-left transition-all ${
+            onClick={() => navigateToScreen('logs')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide text-left transition-all ${
               currentScreen === 'logs' ? 'bg-brand-secondary text-brand-darker shadow-md shadow-brand-secondary/20' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
@@ -499,12 +601,11 @@ export default function App() {
         <header className="sticky top-0 z-20 shrink-0 border-b border-slate-200 bg-white shadow-sm md:shadow-none">
           <div className="flex min-h-16 items-center justify-between gap-3 px-4 sm:px-6 md:px-8">
             <div className="min-w-0 flex items-center gap-3">
-              <div className="flex min-w-0 md:hidden items-center gap-2.5 cursor-pointer" onClick={() => setCurrentScreen('dashboard')}>
-                <div className="w-8 h-8 rounded-lg overflow-hidden bg-brand-primary flex items-center justify-center shadow-sm shrink-0">
-                  <img src={LOGOS.squareMark} className="w-full h-full object-contain p-0.5" alt="Logo" referrerPolicy="no-referrer" />
+              <div className="flex min-w-0 md:hidden items-center gap-2.5 cursor-pointer" onClick={() => navigateToScreen('dashboard')}>
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-primary shadow-sm shrink-0 border border-brand-primary/20">
+                  <img src={LOGOS.squareMark} className="h-7 w-7 object-contain" alt="Consult Flow" referrerPolicy="no-referrer" />
                 </div>
                 <div className="min-w-0">
-                  <span className="block truncate font-bold text-sm text-slate-850 tracking-tight">{PLATFORM_NAME}</span>
                   <span className="block truncate text-[10px] text-slate-400">{pageTitle}</span>
                 </div>
               </div>
@@ -577,7 +678,7 @@ export default function App() {
         <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200/80 z-40 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] pb-safe">
           <div className="grid min-h-16" style={{ gridTemplateColumns: `repeat(${mobileNavColumns}, minmax(0, 1fr))` }}>
           <button
-            onClick={() => setCurrentScreen('dashboard')}
+            onClick={() => navigateToScreen('dashboard')}
             className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
               currentScreen === 'dashboard' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
@@ -589,7 +690,7 @@ export default function App() {
 
           {canSeeClients && (
             <button
-              onClick={() => setCurrentScreen('clientes')}
+              onClick={() => navigateToScreen('clientes')}
               className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
                 currentScreen === 'clientes' ? 'text-brand-secondary' : 'text-slate-450'
               }`}
@@ -602,7 +703,7 @@ export default function App() {
 
           {canCreate && (
             <button
-              onClick={() => setCurrentScreen('criar')}
+              onClick={() => navigateToScreen('criar')}
               className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
                 currentScreen === 'criar' ? 'text-brand-secondary' : 'text-slate-450'
               }`}
@@ -615,7 +716,7 @@ export default function App() {
 
           {canApprove && (
             <button
-              onClick={() => setCurrentScreen('aprovacao')}
+              onClick={() => navigateToScreen('aprovacao')}
               className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors relative ${
                 currentScreen === 'aprovacao' ? 'text-brand-secondary' : 'text-slate-450'
               }`}
@@ -632,7 +733,7 @@ export default function App() {
           )}
 
           <button
-            onClick={() => setCurrentScreen('historico')}
+            onClick={() => navigateToScreen('historico')}
             className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
               currentScreen === 'historico' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
@@ -644,7 +745,7 @@ export default function App() {
 
           {canEditSettings && (
             <button
-              onClick={() => setCurrentScreen('config')}
+              onClick={() => navigateToScreen('config')}
               className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
                 currentScreen === 'config' ? 'text-brand-secondary' : 'text-slate-450'
               }`}
@@ -657,7 +758,7 @@ export default function App() {
 
           {canManageUsers && (
             <button
-              onClick={() => setCurrentScreen('usuarios')}
+              onClick={() => navigateToScreen('usuarios')}
               className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
                 currentScreen === 'usuarios' ? 'text-brand-secondary' : 'text-slate-450'
               }`}
@@ -669,7 +770,7 @@ export default function App() {
           )}
 
           <button
-            onClick={() => setCurrentScreen('logs')}
+            onClick={() => navigateToScreen('logs')}
             className={`flex flex-col items-center justify-center py-1 text-[10px] font-bold focus:outline-none transition-colors ${
               currentScreen === 'logs' ? 'text-brand-secondary' : 'text-slate-450'
             }`}
@@ -683,7 +784,7 @@ export default function App() {
 
         <footer className="bg-white border-t border-slate-200/80 text-center py-4 text-[10px] text-slate-400 mt-auto shrink-0">
           <div className="px-6 sm:px-8 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <span>© 2026 InstaFlow Manager — Gestão de Ativos Corporativos.</span>
+            <span>© 2026 Consult Flow — Gestão de Ativos Corporativos.</span>
             <span className="flex items-center gap-1.5">
               Sessão ativa com <strong className="text-slate-600 font-semibold">{currentUser.email}</strong>
             </span>
@@ -691,5 +792,6 @@ export default function App() {
         </footer>
       </div>
     </div>
+    </ActiveClientProvider>
   );
 }

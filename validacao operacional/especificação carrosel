@@ -1,0 +1,16 @@
+Boa observação — e confirmei no código: hoje isso realmente não existe, nem na base, nem no formulário, nem na integração com o Instagram. Vale explicar por quê é mais que "adicionar um input multiple" — envolve os três níveis (dados, backend, Instagram) e mostro como eu resolveria cada um.
+O que existe hoje
+
+Post.tipo só aceita 'IMAGEM' | 'VIDEO' | 'REELS' — não existe 'CARROSSEL'.
+Cada post tem exatamente um drive_file_id / drive_url — a estrutura de dados já assume 1 mídia por post.
+A função que publica no Instagram (createInstagramContainer) monta um único container com image_url ou video_url — não existe nada de is_carousel_item nem children, que é como a Graph API representa carrossel.
+
+Como a Graph API do Instagram exige que um carrossel seja montado (isso não dá pra simplificar, é assim que a Meta funciona):
+
+Criar um container por item de mídia (2 a 10 itens), cada um com is_carousel_item: true — sem legenda nesses, a legenda vai só no container pai.
+Criar um container pai com media_type: CAROUSEL e children: [id1, id2, ...] (os IDs dos containers do passo 1) e a legenda.
+Aguardar o container pai ficar pronto e publicar com media_publish — esse último passo já existe hoje e não muda.
+
+O que eu mudaria em cada camada
+CamadaMudançaDadosCriar uma tabela post_midias (post_id, ordem, drive_file_id, drive_url, tipo, status de validação individual) em vez de forçar múltiplos arquivos dentro dos campos únicos que Post já tem hoje. Um post do tipo CARROSSEL passa a ter de 2 a 10 linhas nessa tabela; imagem/vídeo avulso continuam com 1 linha, então o resto do sistema (histórico, insights) muda pouco.Upload (frontend)Trocar o dropzone de arquivo único por um de múltiplos arquivos, com uma lista reordenável (arrastar para definir a ordem, que é a ordem final no carrossel) e um "x" para remover item. Cada item passa pela mesma validação que já existe hoje (dimensão, duração de vídeo, etc.), individualmente.ValidaçãoReaproveitar videoValidator.ts e a validação de imagem já existentes, rodando por item; bloquear envio se algum item individual for inválido, do mesmo jeito que já bloqueia hoje para post único.Backend — criaçãoNova função createInstagramCarouselContainer(post): para cada linha em post_midias, chama /media com is_carousel_item: true; depois chama /media de novo no ator de publicação com media_type: CAROUSEL e children com os IDs coletados.Backend — publicaçãoReaproveita 100% do waitForContainerReady e publishInstagramContainer que já existem — a diferença é só no container que chega para eles.TelasNo formulário de criação (/criar), o preview passa a mostrar uma faixa de miniaturas com os pontinhos do Instagram; no quadro de moderação, o cartão mostra "1/4" no canto da miniatura quando é carrossel, em vez de aparentar ser uma imagem só.
+Isso se encaixa bem no plano que já propus: entra na Fase 2 (junto com moderação em kanban), já que depende do formulário de criação existir numa rota própria antes de crescer em complexidade.

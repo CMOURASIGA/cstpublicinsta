@@ -36,7 +36,7 @@ export default function LoginGate({ loading, users, onLogin }: LoginGateProps) {
                 <ShieldCheck className="h-7 w-7" />
               </div>
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-200/80">InstaFlow</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-200/80">Consult Flow</p>
                 <h1 className="text-3xl font-bold tracking-tight text-white">Acesso ao Sistema</h1>
               </div>
             </div>

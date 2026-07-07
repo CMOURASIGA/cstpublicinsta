@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import type { Cliente, ClienteConfiguracao, ClienteIntegracao, ParametroAuditoria, SistemaConfiguracao } from '../types';
+import { useUiFeedback } from '../context/UiFeedbackContext';
 
 type Tab = 'sistema' | 'cliente' | 'integracoes' | 'ia' | 'aprovacao' | 'auditoria';
 
@@ -257,6 +258,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
   });
   const [audits, setAudits] = useState<ParametroAuditoria[]>([]);
   const [systemAudits, setSystemAudits] = useState<ParametroAuditoria[]>([]);
+  const { showNotice } = useUiFeedback();
 
   const clientId = activeClient?.id || '';
   const systemGroups = useMemo(() => {
@@ -419,7 +421,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
       const data = event.data as { type?: string; success?: boolean; message?: string; error?: string } | null;
       if (!data || (data.type !== 'instaflow-google-oauth' && data.type !== 'instaflow-instagram-oauth')) return;
       if (data.success && data.message) {
-        alert(data.message);
+        showNotice(data.message, 'success');
       } else if (!data.success && data.error) {
         setError(data.error);
       }
@@ -538,7 +540,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Falha ao testar.');
-      alert(data.message || 'Teste executado com sucesso.');
+      showNotice(data.message || 'Teste executado com sucesso.', 'success');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao testar.');
     } finally {
@@ -586,7 +588,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao validar pasta do Google Drive.');
-      alert(data.folder?.name ? `Pasta '${data.folder.name}' vinculada com sucesso.` : 'Pasta raiz vinculada com sucesso.');
+      showNotice(data.folder?.name ? `Pasta '${data.folder.name}' vinculada com sucesso.` : 'Pasta raiz vinculada com sucesso.', 'success');
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao validar pasta do Google Drive.');
@@ -607,7 +609,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao criar estrutura do Google Drive.');
-      alert('Estrutura do Google Drive criada e vinculada ao cliente.');
+      showNotice('Estrutura do Google Drive criada e vinculada ao cliente.', 'success');
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao criar estrutura do Google Drive.');
@@ -627,7 +629,7 @@ export default function SettingsSync({ onSettingsSaved, activeClient, availableC
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao desconectar Google Drive.');
-      alert('Conta Google desconectada do cliente.');
+      showNotice('Conta Google desconectada do cliente.', 'success');
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao desconectar Google Drive.');

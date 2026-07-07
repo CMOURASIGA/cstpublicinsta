@@ -5,6 +5,7 @@ import { MAX_INLINE_VIDEO_UPLOAD_BYTES } from '../lib/videoFormat';
 import { VideoValidationResult, validateVideoFile } from '../lib/videoValidator';
 import VideoValidationResultPanel from './VideoValidationResult';
 import VideoEditor, { VideoEditorOutput } from './VideoEditor';
+import { useUiFeedback } from '../context/UiFeedbackContext';
 import {
   CheckCircle,
   FileText,
@@ -55,6 +56,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
   const [saving, setSaving] = useState(false);
   const [loadingDrafts, setLoadingDrafts] = useState(true);
   const [successMsg, setSuccessMsg] = useState('');
+  const { confirmAction, showNotice } = useUiFeedback();
 
   const currentRole = getCurrentRole(currentUser);
   const canSeeAllDrafts = currentRole === 'ADMIN';
@@ -236,7 +238,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
     } catch (err) {
       console.error(err);
       clearUploadedMediaState();
-      alert(err instanceof Error ? err.message : 'Nao foi possivel preparar o video.');
+      showNotice(err instanceof Error ? err.message : 'Nao foi possivel preparar o video.', 'error');
     } finally {
       setUploading(false);
     }
@@ -267,7 +269,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
       setUploaded(true);
     } catch (err) {
       console.error(err);
-      alert('Não foi possível enviar a mídia. Verifique a configuração do backend e tente novamente.');
+      showNotice('Nao foi possivel enviar a midia. Verifique a configuracao do backend e tente novamente.', 'error');
       clearUploadedMediaState();
       setSelectedVideoFile(null);
       setVideoValidation(null);
@@ -280,7 +282,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
 
   const handleAiGeneration = async () => {
     if (!titulo.trim()) {
-      alert('Informe ao menos o título antes de acionar a IA.');
+      showNotice('Informe ao menos o titulo antes de acionar a IA.', 'error');
       return;
     }
 
@@ -312,26 +314,26 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
 
   const persistPost = async (targetStatus: PostStatus) => {
     if (!titulo.trim()) {
-      alert('O título da publicação é obrigatório.');
+      showNotice('O titulo da publicacao e obrigatorio.', 'error');
       return;
     }
 
     if (targetStatus === 'PENDENTE' && !fileUrl) {
-      alert('Para enviar para aprovação, anexe uma imagem ou vídeo.');
+      showNotice('Para enviar para aprovacao, anexe uma imagem ou video.', 'error');
       return;
     }
 
     if (tipo === 'VIDEO') {
       if (!videoValidation) {
-        alert('Valide o video antes de salvar ou enviar para aprovacao.');
+        showNotice('Valide o video antes de salvar ou enviar para aprovacao.', 'error');
         return;
       }
       if (videoValidation.status === 'INVALID' || videoUploadBlocked) {
-        alert('O post nao pode seguir porque o video possui erro tecnico. Corrija o arquivo e tente novamente.');
+        showNotice('O post nao pode seguir porque o video possui erro tecnico. Corrija o arquivo e tente novamente.', 'error');
         return;
       }
       if (!videoEditorOutput || !fileUrl) {
-        alert('Prepare o video e gere a versao final antes de continuar.');
+        showNotice('Prepare o video e gere a versao final antes de continuar.', 'error');
         return;
       }
     }
@@ -394,7 +396,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
       onPostCreated?.();
     } catch (err) {
       console.error(err);
-      alert(err instanceof Error ? err.message : 'Falha ao salvar a publicação.');
+      showNotice(err instanceof Error ? err.message : 'Falha ao salvar a publicacao.', 'error');
     } finally {
       setSaving(false);
     }
@@ -402,7 +404,13 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
 
   const handleDeleteDraft = async () => {
     if (!editingPostId) return;
-    if (!window.confirm('Confirma a exclusão deste rascunho?')) return;
+    const confirmed = await confirmAction({
+      title: 'Excluir rascunho',
+      message: 'O rascunho sera removido de forma permanente.',
+      confirmLabel: 'Excluir',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
 
     setSaving(true);
 
@@ -419,7 +427,7 @@ export default function CreatePost({ onPostCreated, currentUser }: CreatePostPro
       onPostCreated?.();
     } catch (err) {
       console.error(err);
-      alert(err instanceof Error ? err.message : 'Falha ao excluir o rascunho.');
+      showNotice(err instanceof Error ? err.message : 'Falha ao excluir o rascunho.', 'error');
     } finally {
       setSaving(false);
     }

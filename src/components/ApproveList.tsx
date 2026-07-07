@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Post, Usuario } from '../types';
 import { apiFetch } from '../lib/api';
 import { AlertTriangle, ArrowRight, Calendar, ClipboardCheck, Clock, Edit3, Eye, Loader2, Scissors, Send, UploadCloud, User, X } from 'lucide-react';
+import { useUiFeedback } from '../context/UiFeedbackContext';
 
 interface ApproveListProps { onWorkflowComplete?: () => void; currentUser: Usuario; }
 interface MediaValidation {
@@ -171,6 +172,7 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
   const [offsetX, setOffsetX] = useState(0);
   const [offsetY, setOffsetY] = useState(0);
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
+  const { showNotice } = useUiFeedback();
 
   const preset = useMemo(() => {
     if (presetId === 'original' && sourceSize.width && sourceSize.height) return { ...CROP_PRESETS[0], aspectRatio: sourceSize.width / sourceSize.height };
@@ -251,7 +253,7 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
       if (!uploadRes.ok || !upload.success) throw new Error(upload.error || 'Falha ao enviar a midia.');
       await updatePostMedia({ drive_url: upload.url, drive_file_id: upload.fileId, tipo: file.type.startsWith('video/') ? 'VIDEO' : 'IMAGEM', filename: file.name });
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Falha ao atualizar a midia.');
+      showNotice(err instanceof Error ? err.message : 'Falha ao atualizar a midia.', 'error');
     } finally { setUploadingMedia(false); }
   };
 
@@ -291,7 +293,7 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
       await updatePostMedia({ drive_url: upload.url, drive_file_id: upload.fileId, tipo: 'IMAGEM', filename });
       setShowEditor(false);
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Falha ao salvar a imagem ajustada.');
+      showNotice(err instanceof Error ? err.message : 'Falha ao salvar a imagem ajustada.', 'error');
     } finally { setUploadingMedia(false); }
   };
 
@@ -302,7 +304,10 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
   };
 
   const publish = async () => {
-    if (!selectedPost || !canProceed) return alert('A midia ainda nao passou na validacao para Instagram.');
+    if (!selectedPost || !canProceed) {
+      showNotice('A midia ainda nao passou na validacao para Instagram.', 'error');
+      return;
+    }
     setLoading(true);
     try {
       const res = await apiFetch(`/api/posts/${selectedPost.id}/approve`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ action:'instant', mediaValidation:{ mediaKind: mediaValidation.mediaKind, width: mediaValidation.width, height: mediaValidation.height, durationSeconds: mediaValidation.durationSeconds, aspectRatio: mediaValidation.aspectRatio, isFeedCompatible: mediaValidation.isFeedCompatible } }) });
@@ -312,7 +317,10 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
 
   const schedule = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedPost || !canProceed) return alert('A midia ainda nao passou na validacao para Instagram.');
+    if (!selectedPost || !canProceed) {
+      showNotice('A midia ainda nao passou na validacao para Instagram.', 'error');
+      return;
+    }
     setLoading(true);
     try {
       const res = await apiFetch(`/api/posts/${selectedPost.id}/approve`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ action:'schedule', appointmentTime:new Date(scheduleDateTime).toISOString(), mediaValidation:{ mediaKind: mediaValidation.mediaKind, width: mediaValidation.width, height: mediaValidation.height, durationSeconds: mediaValidation.durationSeconds, aspectRatio: mediaValidation.aspectRatio, isFeedCompatible: mediaValidation.isFeedCompatible } }) });
@@ -321,7 +329,10 @@ export default function ApproveList({ onWorkflowComplete, currentUser }: Approve
   };
 
   const reject = async () => {
-    if (!selectedPost || !rejectReason.trim()) return alert('Favor informar o motivo da reprovacao.');
+    if (!selectedPost || !rejectReason.trim()) {
+      showNotice('Favor informar o motivo da reprovacao.', 'error');
+      return;
+    }
     setLoading(true);
     try {
       const res = await apiFetch(`/api/posts/${selectedPost.id}/reject`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ feedback: rejectReason }) });

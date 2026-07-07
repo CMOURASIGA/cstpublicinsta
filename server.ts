@@ -23,6 +23,7 @@ import {
   SistemaConfiguracao,
   Usuario,
 } from "./src/types";
+import { hasGlobalClientAccess, resolveClientSelection } from "./src/lib/access-control";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 dotenv.config();
@@ -568,6 +569,19 @@ function decryptSecretValue(value?: string | null): string {
   return Buffer.concat([decipher.update(payload), decipher.final()]).toString("utf8");
 }
 
+function decryptSecretValueSafe(value?: string | null, context?: { chave?: string; clienteId?: string | null }): string {
+  try {
+    return decryptSecretValue(value);
+  } catch (error) {
+    console.warn("[Consult Flow] Falha ao descriptografar segredo.", {
+      chave: context?.chave || "unknown",
+      clienteId: context?.clienteId || null,
+      error: maskError(error),
+    });
+    return "";
+  }
+}
+
 function extractGoogleDriveFolderId(input: string): string {
   const trimmed = trimEnv(input);
   if (!trimmed) return "";
@@ -735,7 +749,7 @@ async function inspectSupabaseSchema(forceRefresh = false): Promise<SupabaseSche
       }
 
       if (payload.toLowerCase().includes("invalid api key")) {
-        console.warn("[InstaFlow] Chave Supabase inválida. O servidor vai operar em modo local.");
+        console.warn("[Consult Flow] Chave Supabase inválida. O servidor vai operar em modo local.");
         supabaseSchemaCache = {
           ready: false,
           missingTables: [...REQUIRED_SUPABASE_TABLES],
@@ -748,7 +762,7 @@ async function inspectSupabaseSchema(forceRefresh = false): Promise<SupabaseSche
     }
   } catch (error) {
     const detail = maskError(error);
-    console.warn(`[InstaFlow] Supabase indisponível, usando modo local: ${detail}`);
+    console.warn(`[Consult Flow] Supabase indisponível, usando modo local: ${detail}`);
     supabaseSchemaCache = {
       ready: false,
       missingTables: [...REQUIRED_SUPABASE_TABLES],
@@ -776,7 +790,7 @@ async function canUseSupabase(): Promise<boolean> {
     const schema = await inspectSupabaseSchema();
     return schema.ready;
   } catch (error) {
-    console.warn(`[InstaFlow] canUseSupabase caiu para false: ${maskError(error)}`);
+    console.warn(`[Consult Flow] canUseSupabase caiu para false: ${maskError(error)}`);
     return false;
   }
 }
@@ -888,7 +902,7 @@ function getPublicRuntimeConfig() {
     appUrl: config.appUrl,
     supabaseUrl: config.supabaseUrl,
     supabaseAnonKey: config.supabaseAnonKey,
-    platformName: "InstaFlow",
+    platformName: "Consult Flow",
     logos: {
       squareText: "https://i.imgur.com/JHF8X7U.png",
       squareMark: "https://i.imgur.com/wr0z5Xv.png",
@@ -936,17 +950,96 @@ async function getDefaultCliente(): Promise<Cliente> {
   return memoryStore.clientes[0];
 }
 
-async function resolveClienteIdFromRequest(req: express.Request): Promise<string> {
-  const requested = String(req.headers["x-client-id"] || req.query.cliente_id || "").trim();
-  if (requested) {
-    const client = await getClienteById(requested);
-    if (client) {
-      return client.id;
-    }
+function canBypassClientMembership(user: ActingUser): boolean {
+  return hasGlobalClientAccess(user.perfil_publicacao);
+}
+
+async function listClienteMembershipsForUser(userId: string): Promise<ClienteUsuario[]> {
+  if (!(await canUseSupabase())) {
+    return memoryStore.clienteUsuarios.filter((item) => item.usuario_id === userId && item.status === "ATIVO");
   }
 
-  const fallback = await getDefaultCliente();
-  return fallback.id;
+  try {
+    return await supabaseRequest<ClienteUsuario[]>(
+      `cliente_usuarios?usuario_id=eq.${sanitizeId(userId)}&status=eq.ATIVO&select=*&order=criado_em.desc`,
+    );
+  } catch {
+    return memoryStore.clienteUsuarios.filter((item) => item.usuario_id === userId && item.status === "ATIVO");
+  }
+}
+
+async function assertUserBelongsToClient(user: ActingUser, clienteId: string): Promise<void> {
+  if (!clienteId) {
+    throw new HttpError(400, "Cliente obrigatorio.");
+  }
+
+  if (canBypassClientMembership(user)) {
+    return;
+  }
+
+  const memberships = await listClienteMembershipsForUser(user.id);
+  const hasMembership = memberships.some((item) => item.cliente_id === clienteId);
+  if (!hasMembership) {
+    throw new HttpError(403, `Usuario '${user.email}' nao possui acesso ao cliente informado.`);
+  }
+}
+
+async function listAccessibleClientesForUser(user: ActingUser): Promise<Cliente[]> {
+  if (canBypassClientMembership(user)) {
+    return listClientes();
+  }
+
+  const memberships = await listClienteMembershipsForUser(user.id);
+  const allowedIds = new Set(memberships.map((item) => item.cliente_id));
+  return (await listClientes()).filter((cliente) => allowedIds.has(cliente.id));
+}
+
+async function resolveClienteIdFromRequest(req: express.Request, actingUser: ActingUser): Promise<string> {
+  const requested = String(req.headers["x-client-id"] || req.query.cliente_id || req.body?.cliente_id || "").trim();
+  const accessibleClientes = await listAccessibleClientesForUser(actingUser);
+  const selection = resolveClientSelection({
+    requestedClientId: requested,
+    accessibleClientIds: accessibleClientes.map((cliente) => cliente.id),
+    canAccessAllClients: canBypassClientMembership(actingUser),
+    fallbackClientId: canBypassClientMembership(actingUser) ? (await getDefaultCliente()).id : null,
+  });
+
+  if (!selection.ok && "error" in selection) {
+    const failure = selection;
+    if (failure.error === "FORBIDDEN_CLIENT") {
+      throw new HttpError(403, `Usuario '${actingUser.email}' nao possui acesso ao cliente informado.`);
+    }
+    if (failure.error === "CLIENT_REQUIRED") {
+      throw new HttpError(400, "Cliente ativo obrigatorio para esta operacao.");
+    }
+    throw new HttpError(403, "Usuario sem clientes disponiveis para operar.");
+  }
+
+  const client = await getClienteById(selection.clientId);
+  if (!client) {
+    throw new HttpError(404, "Cliente nao encontrado.");
+  }
+
+  await assertUserBelongsToClient(actingUser, client.id);
+  return client.id;
+}
+
+async function getAuthorizedClienteFromParams(req: express.Request, actingUser: ActingUser): Promise<Cliente> {
+  const cliente = await getClienteById(req.params.clienteId);
+  if (!cliente) {
+    throw new HttpError(404, "Cliente nao encontrado.");
+  }
+  await assertUserBelongsToClient(actingUser, cliente.id);
+  return cliente;
+}
+
+async function getAuthorizedClienteFromCandidate(actingUser: ActingUser, candidateId: string): Promise<Cliente> {
+  const cliente = await getClienteById(candidateId);
+  if (!cliente) {
+    throw new HttpError(404, "Cliente nao encontrado.");
+  }
+  await assertUserBelongsToClient(actingUser, cliente.id);
+  return cliente;
 }
 
 async function getClienteIntegracao(clienteId: string): Promise<ClienteIntegracao | null> {
@@ -1660,7 +1753,7 @@ async function resolveConfigValue(clienteId: string | null, chave: string): Prom
 }
 
 async function resolveSecretConfigValue(clienteId: string | null, chave: string): Promise<string> {
-  return decryptSecretValue(await resolveConfigValue(clienteId, chave));
+  return decryptSecretValueSafe(await resolveConfigValue(clienteId, chave), { chave, clienteId });
 }
 
 async function getClienteOperationalContext(clienteId?: string | null): Promise<ClienteOperationalContext> {
@@ -1674,7 +1767,7 @@ async function getClienteOperationalContext(clienteId?: string | null): Promise<
     (await resolveConfigValue(clienteId || null, "MODELO_IA")) ||
     trimEnv(process.env.AI_DEFAULT_MODEL) ||
     runtime.geminiModel;
-  const aiApiKey = (await resolveConfigValue(clienteId || null, "IA_API_KEY")) || getFallbackAiApiKey(aiProvider);
+  const aiApiKey = (await resolveSecretConfigValue(clienteId || null, "IA_API_KEY")) || getFallbackAiApiKey(aiProvider);
   const googleRefreshToken =
     (await resolveSecretConfigValue(clienteId || null, "GOOGLE_REFRESH_TOKEN")) || runtime.googleRefreshToken;
   const configuredOperationMode = ((await resolveConfigValue(clienteId || null, "MODO_OPERACAO")) || "").toUpperCase();
@@ -1701,7 +1794,10 @@ async function getClienteOperationalContext(clienteId?: string | null): Promise<
   const driveRejeitadosId = integrations?.google_drive_rejeitados_folder_id || "";
   const driveArquivadosId = integrations?.google_drive_arquivados_folder_id || "";
   const instagramAccessToken =
-    decryptSecretValue(integrations?.instagram_access_token_encrypted) ||
+    decryptSecretValueSafe(integrations?.instagram_access_token_encrypted, {
+      chave: "instagram_access_token_encrypted",
+      clienteId: clienteId || null,
+    }) ||
     integrations?.instagram_access_token ||
     (!clienteId ? runtime.instagramAccessToken : "");
   const instagramUsername = integrations?.instagram_username || "";
@@ -1924,10 +2020,13 @@ function toJsonString(payload?: unknown): string | undefined {
 }
 
 function maskError(error: unknown): string {
-  if (error instanceof Error) {
+  if (error instanceof HttpError) {
     return error.message;
   }
-  return String(error);
+  if (error instanceof Error) {
+    return "Falha interna ao processar a solicitacao.";
+  }
+  return "Falha interna ao processar a solicitacao.";
 }
 
 function assertPostMediaValidation(
@@ -2738,7 +2837,7 @@ function inferPostType(mimeType?: string, filename?: string): Post["tipo"] {
 }
 
 function normalizePostTypeInput(rawType: unknown, filename?: string): Post["tipo"] {
-  if (rawType === "IMAGEM" || rawType === "VIDEO" || rawType === "REELS") {
+  if (rawType === "IMAGEM" || rawType === "VIDEO" || rawType === "REELS" || rawType === "CARROSSEL") {
     return rawType;
   }
 
@@ -2752,6 +2851,35 @@ const INSTAGRAM_CONTAINER_WAIT_POLL_MS = Number(process.env.INSTAGRAM_CONTAINER_
 
 function getPublishingMediaUrl(post: Post): string | undefined {
   return post.video_editado_drive_url || post.drive_url;
+}
+
+function getCarouselItems(post: Post) {
+  const items = Array.isArray(post.media_metadata?.carousel_items) ? post.media_metadata?.carousel_items : [];
+  return [...items]
+    .filter((item) => item && item.drive_url && item.drive_file_id && (item.tipo === "IMAGEM" || item.tipo === "VIDEO"))
+    .sort((a, b) => a.order - b.order);
+}
+
+function assertCarouselPostPayload(payload: {
+  tipo?: Post["tipo"];
+  media_metadata?: Post["media_metadata"];
+}) {
+  if (payload.tipo !== "CARROSSEL") return;
+  const items = Array.isArray(payload.media_metadata?.carousel_items) ? payload.media_metadata.carousel_items : [];
+  if (items.length < 2 || items.length > 10) {
+    throw new HttpError(400, "Carrossel deve ter entre 2 e 10 midias.");
+  }
+  for (const item of items) {
+    if (!item.drive_url || !item.drive_file_id) {
+      throw new HttpError(400, "Cada item do carrossel precisa ter midia valida.");
+    }
+    if (item.tipo !== "IMAGEM" && item.tipo !== "VIDEO") {
+      throw new HttpError(400, "Carrossel aceita apenas itens de imagem ou video.");
+    }
+    if (item.media_validation_status === "INVALID") {
+      throw new HttpError(400, `A midia '${item.filename || item.id}' do carrossel esta invalida para publicacao.`);
+    }
+  }
 }
 
 function assertPublicMediaUrl(mediaUrl: string | undefined, mediaKind: "imagem" | "vÃ­deo"): string {
@@ -2772,7 +2900,9 @@ function assertVideoPostCanAdvance(payload: {
   tipo?: Post["tipo"];
   status?: PostStatus;
   media_validation_status?: Post["media_validation_status"];
+  media_metadata?: Post["media_metadata"];
 }) {
+  assertCarouselPostPayload(payload);
   const isVideo = payload.tipo === "VIDEO" || payload.tipo === "REELS";
   const isPending = payload.status === "PENDENTE";
   if (isVideo && isPending && payload.media_validation_status === "INVALID") {
@@ -3347,6 +3477,45 @@ async function instagramGraphRequest<T>(
 async function createInstagramContainer(post: Post): Promise<string> {
   const context = await getClienteOperationalContext(post.cliente_id || null);
   const publishingActorId = getInstagramPublishingActorId(context);
+  if (post.tipo === "CARROSSEL") {
+    const childIds: string[] = [];
+    for (const item of getCarouselItems(post)) {
+      const body = new URLSearchParams({
+        access_token: context.instagramAccessToken,
+        is_carousel_item: "true",
+      });
+      if (item.tipo === "VIDEO") {
+        body.set("media_type", "VIDEO");
+        body.set("video_url", assertPublicMediaUrl(item.drive_url, "vÃ­deo"));
+      } else {
+        body.set("image_url", assertPublicMediaUrl(item.drive_url, "imagem"));
+      }
+      const child = await instagramGraphRequest<{ id: string }>(context, `/${publishingActorId}/media`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body,
+      });
+      childIds.push(child.id);
+    }
+
+    const parentBody = new URLSearchParams({
+      access_token: context.instagramAccessToken,
+      caption: buildCaption(post),
+      media_type: "CAROUSEL",
+      children: childIds.join(","),
+    });
+    const parent = await instagramGraphRequest<{ id: string }>(context, `/${publishingActorId}/media`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: parentBody,
+    });
+    return parent.id;
+  }
+
   const body = new URLSearchParams({
     access_token: context.instagramAccessToken,
     caption: buildCaption(post),
@@ -3862,68 +4031,27 @@ async function runScheduledPublications(): Promise<number> {
   return processed;
 }
 
-function getCurrentUserName(headerValue: string | string[] | undefined, fallback: string): string {
-  if (Array.isArray(headerValue)) {
-    return headerValue[0] || fallback;
-  }
-  return headerValue || fallback;
-}
-
-function getCurrentUserEmail(headerValue: string | string[] | undefined): string {
-  if (Array.isArray(headerValue)) {
-    return headerValue[0] || "";
-  }
-  return headerValue || "";
-}
-
 async function getActingUserFromRequest(req: express.Request): Promise<ActingUser> {
   const accessToken = getAuthorizationToken(req.headers.authorization);
-  if (accessToken) {
-    const authUser = await fetchSupabaseAuthUser(accessToken);
-    const operationalUser = await findOperationalUserByAuthIdentity(authUser);
-
-    if (!operationalUser) {
-      throw new HttpError(
-        403,
-        `O usuÃ¡rio autenticado '${authUser.email}' nÃ£o possui cadastro operacional ativo na tabela usuarios.`,
-      );
-    }
-
-    if (!operationalUser.ativo) {
-      throw new HttpError(403, `UsuÃ¡rio '${operationalUser.email}' estÃ¡ inativo.`);
-    }
-
-    return toActingUser(operationalUser);
+  if (!accessToken) {
+    throw new HttpError(401, "Autenticacao obrigatoria.");
   }
 
-  const requestedEmail = getCurrentUserEmail(req.headers["x-user-email"]).trim().toLowerCase();
-  const requestedName = getCurrentUserName(req.headers["x-user-name"], "").trim().toLowerCase();
-  if (!requestedEmail && !requestedName) {
-    throw new HttpError(401, "AutenticaÃ§Ã£o obrigatÃ³ria.");
+  const authUser = await fetchSupabaseAuthUser(accessToken);
+  const operationalUser = await findOperationalUserByAuthIdentity(authUser);
+
+  if (!operationalUser) {
+    throw new HttpError(
+      403,
+      `O usuario autenticado '${authUser.email}' nao possui cadastro operacional ativo na tabela usuarios.`,
+    );
   }
 
-  const users = await listUsers();
-
-  let match =
-    users.find((user) => requestedEmail && user.email.toLowerCase() === requestedEmail) ||
-    users.find((user) => requestedName && user.nome.toLowerCase() === requestedName);
-
-  if (!match) {
-    match =
-      users.find((user) => user.email.toLowerCase() === "cmourasiga@gmail.com") ||
-      users.find((user) => normalizePerfilPublicacao(user) === "ADMIN") ||
-      users[0];
+  if (!operationalUser.ativo) {
+    throw new HttpError(403, `Usuario '${operationalUser.email}' esta inativo.`);
   }
 
-  if (!match) {
-    throw new Error("Nenhum usuÃ¡rio disponÃ­vel na base de usuÃ¡rios.");
-  }
-
-  if (!match.ativo) {
-    throw new Error(`UsuÃ¡rio '${match.email}' estÃ¡ inativo.`);
-  }
-
-  return toActingUser(match);
+  return toActingUser(operationalUser);
 }
 
 function canCreatePosts(user: ActingUser): boolean {
@@ -4150,6 +4278,10 @@ function parseBody<T>(value: T | undefined, fallback: T): T {
   return value === undefined ? fallback : value;
 }
 
+function isValidHexColor(value: string): boolean {
+  return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value);
+}
+
 function respondWithError(
   res: express.Response,
   error: unknown,
@@ -4159,14 +4291,15 @@ function respondWithError(
 ) {
   const detail = maskError(error);
   const resolvedStatus = error instanceof HttpError ? error.status : status;
+  console.error(`[Consult Flow] ${message}`, error);
   void addLog(service, "error", message, { error: detail });
   res.status(resolvedStatus).json({ success: false, error: detail });
 }
 
 app.get("/api/posts", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const actingUser = await getActingUserFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     res.json({ posts: await listPosts(clienteId), clienteId });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar posts.");
@@ -4175,8 +4308,8 @@ app.get("/api/posts", async (req, res) => {
 
 app.get("/api/posts/:id", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const actingUser = await getActingUserFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const post = await getPostById(req.params.id, clienteId);
     if (!post) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
@@ -4191,7 +4324,7 @@ app.post("/api/posts", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanCreatePosts(actingUser);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const now = new Date().toISOString();
     const payload: Omit<Post, "id"> = {
       cliente_id: clienteId,
@@ -4222,6 +4355,11 @@ app.post("/api/posts", async (req, res) => {
       thumbnail_time_sec: req.body.thumbnail_time_sec ?? null,
       video_edit_metadata: req.body.video_edit_metadata ?? undefined,
     };
+    if (payload.tipo === "CARROSSEL") {
+      const firstItem = getCarouselItems(payload as Post)[0];
+      payload.drive_url = firstItem?.drive_url || payload.drive_url;
+      payload.drive_file_id = firstItem?.drive_file_id || payload.drive_file_id;
+    }
     assertVideoPostCanAdvance(payload);
     const created = await createPostRecord(payload);
 
@@ -4252,13 +4390,13 @@ app.post("/api/posts", async (req, res) => {
 
 app.put("/api/posts/:id", async (req, res) => {
   try {
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const actingUser = await getActingUserFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const existing = await getPostById(req.params.id, clienteId);
     if (!existing) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
 
-    const actingUser = await getActingUserFromRequest(req);
     assertCanCreatePosts(actingUser);
     const patch: Partial<Post> = {
       titulo: req.body.titulo ?? existing.titulo,
@@ -4289,10 +4427,17 @@ app.put("/api/posts/:id", async (req, res) => {
       video_edit_metadata: req.body.video_edit_metadata ?? existing.video_edit_metadata,
       cliente_id: clienteId,
     };
+    if (patch.tipo === "CARROSSEL") {
+      const nextPost = { ...existing, ...patch } as Post;
+      const firstItem = getCarouselItems(nextPost)[0];
+      patch.drive_url = firstItem?.drive_url || patch.drive_url || existing.drive_url;
+      patch.drive_file_id = firstItem?.drive_file_id || patch.drive_file_id || existing.drive_file_id;
+    }
     assertVideoPostCanAdvance({
       tipo: patch.tipo,
       status: patch.status,
       media_validation_status: patch.media_validation_status,
+      media_metadata: patch.media_metadata,
     });
     const next = await updatePostRecord(req.params.id, patch);
 
@@ -4320,7 +4465,7 @@ app.delete("/api/posts/:id", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanCreatePosts(actingUser);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const deleted = await deletePostRecord(req.params.id, clienteId);
     if (!deleted) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
@@ -4343,7 +4488,7 @@ app.post("/api/posts/:id/submit", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanCreatePosts(actingUser);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const post = await getPostById(req.params.id, clienteId);
     if (!post) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
@@ -4382,7 +4527,7 @@ app.post("/api/posts/:id/reject", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const post = await getPostById(req.params.id, clienteId);
     if (!post) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
@@ -4420,7 +4565,7 @@ app.post("/api/posts/:id/approve", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const post = await getPostById(req.params.id, clienteId);
     if (!post) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
@@ -4482,7 +4627,8 @@ app.post("/api/posts/:id/approve", async (req, res) => {
   } catch (error) {
     if (req.params.id) {
       try {
-        const clienteId = await resolveClienteIdFromRequest(req);
+        const retryUser = await getActingUserFromRequest(req);
+        const clienteId = await resolveClienteIdFromRequest(req, retryUser);
         const currentPost = await getPostById(req.params.id, clienteId);
         await restorePostToModerationAfterPublishFailure(
           req.params.id,
@@ -4503,7 +4649,7 @@ app.post("/api/posts/aprovar", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const post = await getPostById(req.body.id, clienteId);
     if (!post) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
@@ -4550,7 +4696,8 @@ app.post("/api/posts/aprovar", async (req, res) => {
   } catch (error) {
     if (req.body?.id) {
       try {
-        const clienteId = await resolveClienteIdFromRequest(req);
+        const retryUser = await getActingUserFromRequest(req);
+        const clienteId = await resolveClienteIdFromRequest(req, retryUser);
         const currentPost = await getPostById(req.body.id, clienteId);
         await restorePostToModerationAfterPublishFailure(
           req.body.id,
@@ -4571,7 +4718,7 @@ app.post("/api/posts/rejeitar", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const post = await getPostById(req.body.id, clienteId);
     if (!post) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
@@ -4604,7 +4751,7 @@ app.post("/api/posts/publicar", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const post = await getPostById(req.body.id, clienteId);
     if (!post) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
@@ -4640,7 +4787,7 @@ async function handleDriveUpload(req: express.Request, res: express.Response) {
 
     const parsed = dataUrlToBuffer(dataUrl);
     const mimeType = parsed.mimeType || explicitMimeType;
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
 
     await addLog("Google Drive", "info", `Recebido upload de '${filename}'.`, {
       filename,
@@ -4689,7 +4836,7 @@ app.post("/api/posts/:id/media", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const existing = await getPostById(req.params.id, clienteId);
     if (!existing) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
@@ -4733,7 +4880,10 @@ app.get("/api/media/:fileId", async (req, res) => {
       return res.status(403).json({ error: "Assinatura de mÃ­dia invÃ¡lida." });
     }
 
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = trimEnv(String(req.query.cliente_id || ""));
+    if (!clienteId) {
+      throw new HttpError(400, "Cliente obrigatorio para acesso de midia.");
+    }
     if (!(await canUseRealMode(clienteId))) {
       return res.status(404).json({ error: "MÃ­dia nÃ£o disponÃ­vel fora do modo real." });
     }
@@ -4802,7 +4952,8 @@ app.post("/api/clientes/:clienteId/posts/:postId/publicar-instagram", async (req
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanApprovePosts(actingUser);
-    const post = await getPostById(req.params.postId, req.params.clienteId);
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
+    const post = await getPostById(req.params.postId, cliente.id);
     if (!post) {
       return res.status(404).json({ error: "Post nÃ£o encontrado." });
     }
@@ -4819,7 +4970,8 @@ app.post("/api/clientes/:clienteId/posts/:postId/insights/sync", async (req, res
     if (!canEditClientSettings(actingUser) && !canApprovePosts(actingUser)) {
       throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para sincronizar insights.");
     }
-    const resumo = await syncInstagramPostInsights(req.params.clienteId, req.params.postId);
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
+    const resumo = await syncInstagramPostInsights(cliente.id, req.params.postId);
     res.json({ success: true, insight: resumo });
   } catch (error) {
     respondWithError(res, error, "Instagram API", "Falha ao sincronizar insights do post.", 400);
@@ -4828,8 +4980,9 @@ app.post("/api/clientes/:clienteId/posts/:postId/insights/sync", async (req, res
 
 app.get("/api/clientes/:clienteId/posts/:postId/insights", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const post = await getPostById(req.params.postId, req.params.clienteId);
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
+    const post = await getPostById(req.params.postId, cliente.id);
     if (!post) return res.status(404).json({ error: "Post nÃ£o encontrado." });
     const insight = await getPostInsightResumo(req.params.postId);
     res.json({ insight });
@@ -4840,8 +4993,9 @@ app.get("/api/clientes/:clienteId/posts/:postId/insights", async (req, res) => {
 
 app.get("/api/clientes/:clienteId/insights/dashboard", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const posts = await listPosts(req.params.clienteId);
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
+    const posts = await listPosts(cliente.id);
     const insights = await Promise.all(posts.map((post) => getPostInsightResumo(post.id)));
     const items = insights.filter(Boolean) as PostInsightResumo[];
     const totals = items.reduce(
@@ -5004,7 +5158,7 @@ app.post("/api/google/import", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanCreatePosts(actingUser);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const imported = await importGoogleDrivePosts(actingUser.nome, clienteId);
     res.json({
       success: true,
@@ -5116,8 +5270,8 @@ app.post("/api/simulate-tick", async (req, res) => {
 
 app.get("/api/history", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const actingUser = await getActingUserFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     res.json({ history: await listHistory(clienteId), clienteId });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar histÃ³rico.");
@@ -5126,8 +5280,8 @@ app.get("/api/history", async (req, res) => {
 
 app.get("/api/logs", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const actingUser = await getActingUserFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     res.json({ logs: await listLogs(clienteId), clienteId });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao listar logs.");
@@ -5136,8 +5290,8 @@ app.get("/api/logs", async (req, res) => {
 
 app.post("/api/logs/clear", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const actingUser = await getActingUserFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     await clearLogRecords(clienteId);
     await addLog("Database", "info", "Logs limpos pelo painel.", undefined, clienteId);
     res.json({ success: true });
@@ -5213,8 +5367,8 @@ app.get("/api/admin/clientes", async (req, res) => {
 
 app.get("/api/clientes", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const clientes = await listClientes();
+    const actingUser = await getActingUserFromRequest(req);
+    const clientes = await listAccessibleClientesForUser(actingUser);
     res.json({ clientes });
   } catch (error) {
     respondWithError(res, error, "Clientes", "Falha ao listar clientes.");
@@ -5223,11 +5377,8 @@ app.get("/api/clientes", async (req, res) => {
 
 app.get("/api/clientes/:clienteId", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) {
-      return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
-    }
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     res.json({ cliente });
   } catch (error) {
     respondWithError(res, error, "Clientes", "Falha ao buscar cliente.");
@@ -5240,11 +5391,7 @@ app.patch("/api/clientes/:clienteId", async (req, res) => {
     if (!canEditClientSettings(actingUser)) {
       throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para editar dados do cliente.");
     }
-
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) {
-      return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
-    }
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
 
     const payload: Cliente = {
       ...cliente,
@@ -5256,6 +5403,24 @@ app.patch("/api/clientes/:clienteId", async (req, res) => {
       cor_secundaria: req.body.cor_secundaria !== undefined ? (req.body.cor_secundaria ? String(req.body.cor_secundaria) : null) : cliente.cor_secundaria || null,
       atualizado_em: new Date().toISOString(),
     };
+
+    if (!payload.nome) {
+      throw new HttpError(400, "Nome do cliente e obrigatorio.");
+    }
+    if (!payload.slug) {
+      throw new HttpError(400, "Slug do cliente e obrigatorio.");
+    }
+    if (payload.cor_primaria && !isValidHexColor(payload.cor_primaria)) {
+      throw new HttpError(400, "Cor primaria invalida.");
+    }
+    if (payload.cor_secundaria && !isValidHexColor(payload.cor_secundaria)) {
+      throw new HttpError(400, "Cor secundaria invalida.");
+    }
+
+    const duplicatedSlug = (await listClientes()).find((item) => item.id !== cliente.id && item.slug === payload.slug);
+    if (duplicatedSlug) {
+      throw new HttpError(409, "Ja existe cliente com este slug.");
+    }
 
     if (!(await canUseSupabase())) {
       const index = memoryStore.clientes.findIndex((item) => item.id === cliente.id);
@@ -5281,13 +5446,21 @@ app.patch("/api/clientes/:clienteId", async (req, res) => {
 app.post("/api/clientes", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    if (!canEditClientSettings(actingUser)) {
-      throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para editar integraÃ§Ãµes do cliente.");
-    }
+    assertIsAdmin(actingUser);
     const nome = trimEnv(req.body.nome);
     const slug = trimEnv(req.body.slug).toLowerCase();
     if (!nome || !slug) {
       return res.status(400).json({ error: "Nome e slug sÃ£o obrigatÃ³rios." });
+    }
+    if (req.body.cor_primaria && !isValidHexColor(String(req.body.cor_primaria))) {
+      throw new HttpError(400, "Cor primaria invalida.");
+    }
+    if (req.body.cor_secundaria && !isValidHexColor(String(req.body.cor_secundaria))) {
+      throw new HttpError(400, "Cor secundaria invalida.");
+    }
+    const duplicatedSlug = (await listClientes()).find((item) => item.slug === slug);
+    if (duplicatedSlug) {
+      throw new HttpError(409, "Ja existe cliente com este slug.");
     }
 
     const now = new Date().toISOString();
@@ -5327,11 +5500,8 @@ app.post("/api/clientes", async (req, res) => {
 
 app.get("/api/clientes/:clienteId/integracoes", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) {
-      return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
-    }
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
 
     if (!(await canUseSupabase())) {
       const local = { cliente_id: cliente.id, modo_operacao: "SIMULADOR" } as ClienteIntegracao;
@@ -5355,10 +5525,7 @@ app.patch("/api/clientes/:clienteId/integracoes", async (req, res) => {
     if (!canEditClientSettings(actingUser)) {
       throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para editar integraÃ§Ãµes do cliente.");
     }
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) {
-      return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
-    }
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
 
     const rawManualInstagramToken = trimEnv(req.body.instagram_access_token ?? "");
     const manualInstagramToken =
@@ -5444,8 +5611,7 @@ app.patch("/api/clientes/:clienteId/integracoes", async (req, res) => {
 app.get("/api/clientes/:clienteId/usuarios", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     if (actingUser.perfil_publicacao !== "SUPER_ADMIN" && actingUser.perfil_publicacao !== "ADMIN_CLIENTE" && actingUser.perfil_publicacao !== "ADMIN") {
       throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para visualizar usuÃ¡rios do cliente.");
     }
@@ -5476,9 +5642,7 @@ app.post("/api/clientes/:clienteId/usuarios/convites", async (req, res) => {
     if (actingUser.perfil_publicacao !== "SUPER_ADMIN" && actingUser.perfil_publicacao !== "ADMIN_CLIENTE" && actingUser.perfil_publicacao !== "ADMIN") {
       throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para convidar usuÃ¡rios do cliente.");
     }
-
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
 
     const nome = trimEnv(String(req.body.nome || ""));
     const email = trimEnv(String(req.body.email || "")).toLowerCase();
@@ -5515,9 +5679,7 @@ app.patch("/api/clientes/:clienteId/usuarios/:usuarioId", async (req, res) => {
     if (actingUser.perfil_publicacao !== "SUPER_ADMIN" && actingUser.perfil_publicacao !== "ADMIN_CLIENTE" && actingUser.perfil_publicacao !== "ADMIN") {
       throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para editar usuÃ¡rios do cliente.");
     }
-
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
 
     const memberships = await listClienteUsuarios(cliente.id);
     const membership = memberships.find((item) => item.usuario_id === req.params.usuarioId);
@@ -5546,9 +5708,7 @@ app.delete("/api/clientes/:clienteId/usuarios/:usuarioId", async (req, res) => {
     if (actingUser.perfil_publicacao !== "SUPER_ADMIN" && actingUser.perfil_publicacao !== "ADMIN_CLIENTE" && actingUser.perfil_publicacao !== "ADMIN") {
       throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para remover usuÃ¡rios do cliente.");
     }
-
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
 
     if (!(await canUseSupabase())) {
       memoryStore.clienteUsuarios = memoryStore.clienteUsuarios.filter(
@@ -5578,8 +5738,8 @@ app.get("/api/auth/me", async (req, res) => {
 
 app.get("/api/settings", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const actingUser = await getActingUserFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     res.json({ settings: await getSettingsView(clienteId), clienteId });
   } catch (error) {
     respondWithError(res, error, "Database", "Falha ao ler estado das integraÃ§Ãµes.");
@@ -5665,8 +5825,7 @@ app.post("/api/admin/configuracoes/sistema/testar", async (req, res) => {
 app.get("/api/clientes/:clienteId/configuracoes", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     await ensureClienteSetup(cliente.id);
     const configs = await listClienteConfiguracoes(cliente.id);
     const integracoes = await getClienteIntegracao(cliente.id);
@@ -5683,11 +5842,35 @@ app.get("/api/clientes/:clienteId/configuracoes", async (req, res) => {
   }
 });
 
+app.get("/api/admin/logs", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    assertIsAdmin(actingUser);
+    res.json({ logs: await listLogs(), clienteId: null });
+  } catch (error) {
+    respondWithError(res, error, "Database", "Falha ao listar logs globais.");
+  }
+});
+
+app.get("/api/clientes/:clienteId/logs", async (req, res) => {
+  try {
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
+    res.json({ logs: await listLogs(cliente.id), clienteId: cliente.id });
+  } catch (error) {
+    respondWithError(res, error, "Database", "Falha ao listar logs do cliente.");
+  }
+});
+
+app.post("/api/admin/clientes", async (req, res) => {
+  req.url = "/api/clientes";
+  app._router.handle(req, res, () => undefined);
+});
+
 app.patch("/api/clientes/:clienteId/configuracoes", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     if (!canEditClientSettings(actingUser)) {
       throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para alterar configuraÃ§Ãµes do cliente.");
     }
@@ -5735,9 +5918,8 @@ app.patch("/api/clientes/:clienteId/configuracoes", async (req, res) => {
 
 app.get("/api/clientes/:clienteId/ia/configuracao", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     const configs = await listClienteConfiguracoes(cliente.id);
     const items = configs.filter((config) => config.categoria === "IA");
     res.json({ items });
@@ -5749,8 +5931,7 @@ app.get("/api/clientes/:clienteId/ia/configuracao", async (req, res) => {
 app.patch("/api/clientes/:clienteId/ia/configuracao", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     const items = Array.isArray(req.body.items) ? req.body.items : [];
     const updated: ClienteConfiguracao[] = [];
     for (const item of items) {
@@ -5788,8 +5969,7 @@ app.patch("/api/clientes/:clienteId/ia/configuracao", async (req, res) => {
 app.post("/api/clientes/:clienteId/ia/testar", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     const context = await getClienteOperationalContext(cliente.id);
     if (!context.aiConfigured) {
       throw new HttpError(400, "Cliente sem chave de IA configurada.");
@@ -5818,9 +5998,8 @@ app.post("/api/clientes/:clienteId/ia/testar", async (req, res) => {
 
 app.get("/api/clientes/:clienteId/regras-aprovacao", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     const configs = await listClienteConfiguracoes(cliente.id);
     const items = configs.filter((config) => config.categoria === "APROVACAO");
     res.json({ items });
@@ -5832,8 +6011,7 @@ app.get("/api/clientes/:clienteId/regras-aprovacao", async (req, res) => {
 app.patch("/api/clientes/:clienteId/regras-aprovacao", async (req, res) => {
   try {
     const actingUser = await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     const items = Array.isArray(req.body.items) ? req.body.items : [];
     const updated: ClienteConfiguracao[] = [];
     for (const item of items) {
@@ -5880,9 +6058,8 @@ app.get("/api/admin/logs/parametros", async (req, res) => {
 
 app.get("/api/clientes/:clienteId/logs/parametros", async (req, res) => {
   try {
-    await getActingUserFromRequest(req);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const actingUser = await getActingUserFromRequest(req);
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     res.json({ items: await listParametroAuditoria(cliente.id) });
   } catch (error) {
     respondWithError(res, error, "Clientes", "Falha ao carregar auditoria do cliente.");
@@ -5893,8 +6070,7 @@ app.post("/api/clientes/:clienteId/integracoes/google-drive/connect", async (req
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageGoogleDrive(actingUser);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     await ensureClienteSetup(cliente.id);
     const authorization_url = await buildGoogleDriveAuthorizationUrl({
       clienteId: cliente.id,
@@ -5911,8 +6087,7 @@ app.post("/api/clientes/:clienteId/integracoes/google-drive/setup-folders", asyn
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageGoogleDrive(actingUser);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     const integracao = await getClienteIntegracao(cliente.id);
     const rootFolderId = extractGoogleDriveFolderId(req.body?.google_drive_folder_id || integracao?.google_drive_folder_id || "");
     if (!rootFolderId) {
@@ -5934,8 +6109,7 @@ app.post("/api/clientes/:clienteId/integracoes/google-drive/use-existing-folder"
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageGoogleDrive(actingUser);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     const rootFolderId = trimEnv(String(req.body?.google_drive_folder_id || req.body?.folder_id || ""));
     const integration = await applyGoogleDriveRootFolder(cliente.id, rootFolderId, actingUser);
     const folder = await testDriveFolderAccessForClient(cliente.id, extractGoogleDriveFolderId(rootFolderId));
@@ -5949,8 +6123,7 @@ app.post("/api/clientes/:clienteId/integracoes/google-drive/testar", async (req,
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageGoogleDrive(actingUser);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     const integracao = await getClienteIntegracao(cliente.id);
     const folderId =
       extractGoogleDriveFolderId(req.body?.google_drive_folder_id || "") ||
@@ -5978,8 +6151,7 @@ app.post("/api/clientes/:clienteId/integracoes/google-drive/test", async (req, r
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageGoogleDrive(actingUser);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     const integracao = await getClienteIntegracao(cliente.id);
     const folderId =
       extractGoogleDriveFolderId(req.body?.google_drive_folder_id || "") ||
@@ -5996,8 +6168,7 @@ app.post("/api/clientes/:clienteId/integracoes/google-drive/disconnect", async (
   try {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageGoogleDrive(actingUser);
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     await setClienteGoogleDriveStatus(cliente.id, "DESCONECTADO", {
       token: "",
       accountEmail: "",
@@ -6034,8 +6205,7 @@ app.get("/api/integrations/instagram/connect", async (req, res) => {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.query.clienteId || req.query.cliente_id || ""));
-    const cliente = await getClienteById(clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromCandidate(actingUser, clienteId);
     const authorizationUrl = await buildInstagramAuthorizationUrl({
       clienteId: cliente.id,
       usuarioId: actingUser.id,
@@ -6059,8 +6229,7 @@ app.get("/api/integrations/meta/connect", async (req, res) => {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.query.clienteId || req.query.cliente_id || ""));
-    const cliente = await getClienteById(clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromCandidate(actingUser, clienteId);
     const authorizationUrl = await buildInstagramAuthorizationUrl({
       clienteId: cliente.id,
       usuarioId: actingUser.id,
@@ -6257,8 +6426,7 @@ app.post("/api/integrations/instagram/disconnect", async (req, res) => {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.body?.clienteId || req.query.clienteId || ""));
-    const cliente = await getClienteById(clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromCandidate(actingUser, clienteId);
     const integration = await setClienteInstagramStatus(cliente.id, "DESCONECTADO", {
       instagram_access_token_encrypted: null,
       instagram_username: null,
@@ -6278,8 +6446,7 @@ app.post("/api/integrations/meta/disconnect", async (req, res) => {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.body?.clienteId || req.query?.clienteId || ""));
-    const cliente = await getClienteById(clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromCandidate(actingUser, clienteId);
     const integration = await setClienteInstagramStatus(cliente.id, "DESCONECTADO", {
       instagram_access_token_encrypted: null,
       instagram_username: null,
@@ -6300,8 +6467,7 @@ app.post("/api/integrations/instagram/test", async (req, res) => {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.body?.clienteId || req.query?.clienteId || ""));
-    const cliente = await getClienteById(clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromCandidate(actingUser, clienteId);
     const context = await getClienteOperationalContext(cliente.id);
     if (!context.instagramAccessToken || !getInstagramPublishingActorId(context)) {
       throw new HttpError(400, "Cliente sem token Instagram configurado.");
@@ -6330,8 +6496,7 @@ app.post("/api/integrations/meta/test", async (req, res) => {
     const actingUser = await getActingUserFromRequest(req);
     assertCanManageInstagram(actingUser);
     const clienteId = trimEnv(String(req.body?.clienteId || req.query?.clienteId || ""));
-    const cliente = await getClienteById(clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromCandidate(actingUser, clienteId);
     const context = await getClienteOperationalContext(cliente.id);
     if (!context.instagramAccessToken || !getInstagramPublishingActorId(context)) {
       throw new HttpError(400, "Cliente sem token Meta/Instagram configurado.");
@@ -6395,8 +6560,7 @@ app.post("/api/clientes/:clienteId/integracoes/meta/testar", async (req, res) =>
     if (!canEditClientSettings(actingUser)) {
       throw new HttpError(403, "UsuÃ¡rio sem permissÃ£o para testar integraÃ§Ãµes.");
     }
-    const cliente = await getClienteById(req.params.clienteId);
-    if (!cliente) return res.status(404).json({ error: "Cliente nÃ£o encontrado." });
+    const cliente = await getAuthorizedClienteFromParams(req, actingUser);
     const context = await getClienteOperationalContext(cliente.id);
     if (!context.instagramConfigured) {
       throw new HttpError(400, "Cliente sem token ou identificador Instagram/Meta configurado.");
@@ -6650,8 +6814,8 @@ app.post("/api/gemini/generate-caption", async (req, res) => {
   const count = Number(hashtagsCount) || 5;
 
   try {
-    await getActingUserFromRequest(req);
-    const clienteId = await resolveClienteIdFromRequest(req);
+    const actingUser = await getActingUserFromRequest(req);
+    const clienteId = await resolveClienteIdFromRequest(req, actingUser);
     const context = await getClienteOperationalContext(clienteId);
     if (context.aiProvider !== "GEMINI") {
       throw new HttpError(400, `O cliente atual estÃ¡ configurado com ${context.aiProvider}. A geraÃ§Ã£o automÃ¡tica implementada no backend usa Gemini no momento.`);
@@ -6722,10 +6886,10 @@ export async function initializeApp(options?: { enableStatic?: boolean }) {
   try {
     const schema = await inspectSupabaseSchema(true);
     if (!schema.ready) {
-      console.warn(`[InstaFlow] Supabase schema incompleto. Tabelas ausentes: ${schema.missingTables.join(", ")}`);
+      console.warn(`[Consult Flow] Supabase schema incompleto. Tabelas ausentes: ${schema.missingTables.join(", ")}`);
     }
   } catch (error) {
-    console.warn(`[InstaFlow] Falha ao inspecionar schema Supabase: ${maskError(error)}`);
+    console.warn(`[Consult Flow] Falha ao inspecionar schema Supabase: ${maskError(error)}`);
   }
 
   try {

@@ -208,12 +208,26 @@ export interface VideoEditMetadata {
   final_filename?: string;
 }
 
+export interface PostCarouselItem {
+  id: string;
+  order: number;
+  tipo: 'IMAGEM' | 'VIDEO';
+  drive_file_id: string;
+  drive_url: string;
+  filename?: string;
+  mime_type?: string;
+  media_validation_status?: MediaValidationStatus | null;
+  media_validation_errors?: MediaValidationIssue[];
+  media_validation_warnings?: MediaValidationIssue[];
+  media_metadata?: MediaMetadata;
+}
+
 export interface Post {
   id: string; // UUID
   cliente_id?: string | null;
   titulo: string;
   legenda: string;
-  tipo: 'IMAGEM' | 'VIDEO' | 'REELS';
+  tipo: 'IMAGEM' | 'VIDEO' | 'REELS' | 'CARROSSEL';
   drive_file_id?: string;
   drive_url?: string;
   creation_id?: string;
@@ -234,7 +248,7 @@ export interface Post {
   media_validation_status?: MediaValidationStatus | null;
   media_validation_errors?: MediaValidationIssue[];
   media_validation_warnings?: MediaValidationIssue[];
-  media_metadata?: MediaMetadata;
+  media_metadata?: MediaMetadata & { carousel_items?: PostCarouselItem[] };
   video_original_drive_file_id?: string | null;
   video_original_drive_url?: string | null;
   video_editado_drive_file_id?: string | null;
